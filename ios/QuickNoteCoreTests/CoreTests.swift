@@ -17,10 +17,21 @@ final class CoreTests: XCTestCase {
         let parser = DeterministicDraftParser(calendar: Calendar(identifier: .gregorian), now: { Date(timeIntervalSince1970: 1_800_000_000) })
         guard case .create(let ledger) = try await parser.parse("今天沃尔玛购物16美元，用美国银行支付") else { return XCTFail() }
         XCTAssertEqual(ledger.module, .ledger); XCTAssertEqual(ledger.amount, 16); XCTAssertEqual(ledger.currency, "USD"); XCTAssertNotNil(ledger.merchant); XCTAssertNotNil(ledger.category); XCTAssertFalse(ledger.tags.isEmpty)
+        guard case .create(let quantityLedger) = try await parser.parse("买了2瓶水16美元") else { return XCTFail() }
+        XCTAssertEqual(quantityLedger.quantity, 2); XCTAssertEqual(quantityLedger.amount, 16); XCTAssertEqual(quantityLedger.currency, "USD")
         guard case .create(let todo) = try await parser.parse("明天早上8点提醒我吃早饭") else { return XCTFail() }; XCTAssertEqual(todo.module, .todo); XCTAssertNotNil(todo.dueAt); XCTAssertTrue(todo.reminderEnabled)
         guard case .create(let memo) = try await parser.parse("车内有早点") else { return XCTFail() }; XCTAssertEqual(memo.module, .memo)
         guard case .create(let idea) = try await parser.parse("以后这个软件可以增加家庭模式") else { return XCTFail() }; XCTAssertEqual(idea.module, .idea)
         guard case .search(let query) = try await parser.parse("找重要的账目和备忘") else { return XCTFail() }; XCTAssertEqual(query.modules, [.ledger, .memo]); XCTAssertTrue(query.importantOnly)
+    }
+
+    func testSearchesStructuredFieldsAndTotalsNumbersByCurrency() throws {
+        let core = QuickNoteCore(store: MemoryRecordStore(), identity: TestIdentity("owner"))
+        _ = try core.save(Record(module: .ledger, rawInput: "买2瓶水16美元", content: "买水", quantity: 2, amount: 16, currency: "USD", merchant: "商店"))
+        _ = try core.save(Record(module: .memo, rawInput: "库存5000日元"))
+        XCTAssertEqual(try core.search(RecordQuery(keyword: "商店")).count, 1)
+        let totals = QuickNoteCore.numericTotals(in: try core.records())
+        XCTAssertEqual(totals["USD"], 16); XCTAssertEqual(totals["JPY"], 5000)
     }
 
     func testParserEmptyInputReturnsManualSafeDraft() async throws {

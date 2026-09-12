@@ -19,6 +19,7 @@ public struct Record: Identifiable, Codable, Hashable, Sendable {
     public var createdAt: Date
     public var updatedAt: Date
     public var merchant: String?
+    public var quantity: Decimal?
     public var amount: Decimal?
     public var currency: String?
     public var category: String?
@@ -31,12 +32,12 @@ public struct Record: Identifiable, Codable, Hashable, Sendable {
 
     public init(id: UUID = UUID(), ownerID: String = "", module: Module, rawInput: String, content: String? = nil,
                 important: Bool = false, tags: [String] = [], createdAt: Date = Date(), updatedAt: Date = Date(),
-                merchant: String? = nil, amount: Decimal? = nil, currency: String? = nil, category: String? = nil,
+                merchant: String? = nil, quantity: Decimal? = nil, amount: Decimal? = nil, currency: String? = nil, category: String? = nil,
                 paymentMethod: String? = nil, occurredAt: Date? = nil, dueAt: Date? = nil,
                 reminderEnabled: Bool = false, location: String? = nil, status: TodoStatus? = nil) {
         self.id = id; self.ownerID = ownerID; self.module = module; self.rawInput = rawInput
         self.content = content ?? rawInput; self.important = important; self.tags = tags
-        self.createdAt = createdAt; self.updatedAt = updatedAt; self.merchant = merchant; self.amount = amount
+        self.createdAt = createdAt; self.updatedAt = updatedAt; self.merchant = merchant; self.quantity = quantity; self.amount = amount
         self.currency = currency; self.category = category; self.paymentMethod = paymentMethod
         self.occurredAt = occurredAt; self.dueAt = dueAt; self.reminderEnabled = reminderEnabled
         self.location = location; self.status = status
@@ -92,14 +93,26 @@ public struct DeterministicDraftParser: DraftParser {
             return Record(module: .idea, rawInput: text, tags: tags(text, module: .idea))
         }
         if amount(in: text) != nil || ["美元", "支付", "购物", "付款", "花了"].contains(where: text.contains) {
-            return Record(module: .ledger, rawInput: text, tags: tags(text, module: .ledger), merchant: merchant(in: text), amount: amount(in: text), currency: text.contains("美元") || text.localizedCaseInsensitiveContains("USD") ? "USD" : nil, category: text.contains("购物") ? "购物" : nil, paymentMethod: payment(in: text), occurredAt: date(in: text) ?? now())
+            return Record(module: .ledger, rawInput: text, tags: tags(text, module: .ledger), merchant: merchant(in: text), quantity: quantity(in: text), amount: amount(in: text), currency: currency(in: text), category: text.contains("购物") ? "购物" : nil, paymentMethod: payment(in: text), occurredAt: date(in: text) ?? now())
         }
         return Record(module: .memo, rawInput: text, tags: tags(text, module: .memo))
     }
 
     private func amount(in text: String) -> Decimal? {
-        guard let range = text.range(of: #"\d+(?:\.\d+)?(?=\s*(?:美元|USD|元))"#, options: [.regularExpression, .caseInsensitive]) else { return nil }
+        guard let range = text.range(of: #"\d+(?:\.\d+)?(?=\s*(?:美元|USD|日元|JPY|人民币|CNY|元))"#, options: [.regularExpression, .caseInsensitive]) else { return nil }
         return Decimal(string: String(text[range]), locale: Locale(identifier: "en_US_POSIX"))
+    }
+
+    private func quantity(in text: String) -> Decimal? {
+        guard let range = text.range(of: #"\d+(?:\.\d+)?(?=\s*(?:瓶|个|件|盒|包|杯|份|本|张|台))"#, options: .regularExpression) else { return nil }
+        return Decimal(string: String(text[range]), locale: Locale(identifier: "en_US_POSIX"))
+    }
+
+    private func currency(in text: String) -> String? {
+        if text.contains("美元") || text.localizedCaseInsensitiveContains("USD") { return "USD" }
+        if text.contains("日元") || text.localizedCaseInsensitiveContains("JPY") { return "JPY" }
+        if text.contains("人民币") || text.localizedCaseInsensitiveContains("CNY") || text.contains("元") { return "CNY" }
+        return nil
     }
 
     private func merchant(in text: String) -> String? { ["沃尔玛", "Walmart", "Costco", "Target", "亚马逊"].first(where: { text.localizedCaseInsensitiveContains($0) }) }
@@ -185,13 +198,13 @@ public final class QuickNoteCore: @unchecked Sendable {
         case .ledger:
             value.dueAt = nil; value.reminderEnabled = false; value.status = nil
         case .todo:
-            value.merchant = nil; value.amount = nil; value.currency = nil; value.category = nil
+            value.merchant = nil; value.quantity = nil; value.amount = nil; value.currency = nil; value.category = nil
             value.paymentMethod = nil; value.occurredAt = nil; value.status = value.status ?? .pending
         case .memo:
-            value.merchant = nil; value.amount = nil; value.currency = nil; value.category = nil
+            value.merchant = nil; value.quantity = nil; value.amount = nil; value.currency = nil; value.category = nil
             value.paymentMethod = nil; value.occurredAt = nil; value.dueAt = nil; value.location = nil; value.status = nil
         case .idea:
-            value.merchant = nil; value.amount = nil; value.currency = nil; value.category = nil
+            value.merchant = nil; value.quantity = nil; value.amount = nil; value.currency = nil; value.category = nil
             value.paymentMethod = nil; value.occurredAt = nil; value.dueAt = nil
             value.reminderEnabled = false; value.location = nil; value.status = nil
         }
@@ -205,11 +218,27 @@ public final class QuickNoteCore: @unchecked Sendable {
 
     public func search(_ query: RecordQuery) throws -> [Record] {
         try records().filter { record in
-            let haystack = ([record.content, record.rawInput] + record.tags).joined(separator: " ")
+            let fields = [record.merchant, record.currency, record.category, record.paymentMethod, record.location, record.amount.map(String.init(describing:)), record.quantity.map(String.init(describing:))].compactMap { $0 }
+            let haystack = ([record.content, record.rawInput] + record.tags + fields).joined(separator: " ")
             return query.modules.contains(record.module)
                 && (!query.importantOnly || record.important)
                 && (query.keyword.isEmpty || haystack.localizedCaseInsensitiveContains(query.keyword))
                 && query.tags.allSatisfy { record.tags.contains($0) }
+        }
+    }
+
+    public static func numericTotals(in records: [Record]) -> [String: Decimal] {
+        records.reduce(into: [:]) { totals, record in
+            if let amount = record.amount { totals[record.currency ?? "未标币种", default: 0] += amount; return }
+            let text = record.rawInput.isEmpty ? record.content : record.rawInput
+            guard let regex = try? NSRegularExpression(pattern: #"\d+(?:\.\d+)?"#) else { return }
+            let range = NSRange(text.startIndex..., in: text)
+            let values = regex.matches(in: text, range: range).compactMap { match -> Decimal? in
+                guard let range = Range(match.range, in: text) else { return nil }
+                return Decimal(string: String(text[range]), locale: Locale(identifier: "en_US_POSIX"))
+            }
+            let key = text.contains("美元") || text.localizedCaseInsensitiveContains("USD") ? "USD" : text.contains("日元") || text.localizedCaseInsensitiveContains("JPY") ? "JPY" : text.contains("人民币") || text.localizedCaseInsensitiveContains("CNY") || text.contains("元") ? "CNY" : "未标币种"
+            values.forEach { totals[key, default: 0] += $0 }
         }
     }
 }
