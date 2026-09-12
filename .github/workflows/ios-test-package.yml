@@ -61,14 +61,14 @@ jobs:
           test -d "$APP_PATH"
           mkdir -p package/Payload
           cp -R "$APP_PATH" package/Payload/
-          (cd package && zip -qry ../AIQuickNote-V0-unsigned.ipa Payload)
-          unzip -Z1 AIQuickNote-V0-unsigned.ipa | grep -q '^Payload/AIQuickNote.app/'
-          test -s AIQuickNote-V0-unsigned.ipa
+          (cd package && zip -qry ../AIQuickNote-V1-alpha-unsigned.ipa Payload)
+          unzip -Z1 AIQuickNote-V1-alpha-unsigned.ipa | grep -q '^Payload/AIQuickNote.app/'
+          test -s AIQuickNote-V1-alpha-unsigned.ipa
 
           VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")
           BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")
           BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist")
-          SIZE=$(stat -f%z AIQuickNote-V0-unsigned.ipa)
+          SIZE=$(stat -f%z AIQuickNote-V1-alpha-unsigned.ipa)
           {
             echo "Git commit: $GITHUB_SHA"
             echo "Build date (UTC): $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -87,16 +87,16 @@ jobs:
             cat build-info.txt
             echo '```'
             echo
-            echo "Verified: Payload/AIQuickNote.app exists in AIQuickNote-V0-unsigned.ipa"
+            echo "Verified: Payload/AIQuickNote.app exists in AIQuickNote-V1-alpha-unsigned.ipa"
             echo "This IPA is unsigned and must be re-signed before installation."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload iPhone package
         uses: actions/upload-artifact@v4
         with:
-          name: AIQuickNote-V0-iPhone
+          name: AIQuickNote-V1-alpha-iPhone
           path: |
-            AIQuickNote-V0-unsigned.ipa
+            AIQuickNote-V1-alpha-unsigned.ipa
             build-info.txt
           if-no-files-found: error
 

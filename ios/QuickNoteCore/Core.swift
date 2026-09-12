@@ -43,7 +43,7 @@ public struct Record: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
-public struct RecordQuery: Sendable {
+public struct RecordQuery: Sendable, Equatable {
     public var keyword = ""
     public var modules = Set(Module.allCases)
     public var importantOnly = false
@@ -54,8 +54,84 @@ public struct RecordQuery: Sendable {
 }
 
 public protocol IdentityGate: Sendable { var confirmedUserID: String? { get } }
-public protocol QueryParsing: Sendable { func parse(_ text: String) -> RecordQuery }
-public struct DeterministicQueryParser: QueryParsing { public init() {} ; public func parse(_ text: String) -> RecordQuery { RecordQuery(keyword: text) } }
+public enum ParsedInput: Sendable, Equatable {
+    case create(Record)
+    case search(RecordQuery)
+}
+
+public protocol DraftParser: Sendable { func parse(_ input: String) async throws -> ParsedInput }
+
+public struct DeterministicDraftParser: DraftParser {
+    private let calendar: Calendar
+    private let now: @Sendable () -> Date
+
+    public init(calendar: Calendar = .current, now: @escaping @Sendable () -> Date = Date.init) {
+        self.calendar = calendar; self.now = now
+    }
+
+    public func parse(_ input: String) async throws -> ParsedInput {
+        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return .create(Record(module: .memo, rawInput: input)) }
+        if text.hasPrefix("找") || text.hasPrefix("搜索") || text.hasPrefix("查询") { return .search(query(text)) }
+        return .create(draft(text))
+    }
+
+    private func query(_ text: String) -> RecordQuery {
+        let named = Set(Module.allCases.filter { text.contains($0.title) })
+        var keyword = text
+        ["搜索", "查询", "找", "所有", "全部", "重要的", "重要", "记录", "和", "的"].forEach { keyword = keyword.replacingOccurrences(of: $0, with: "") }
+        Module.allCases.forEach { keyword = keyword.replacingOccurrences(of: $0.title, with: "") }
+        return RecordQuery(keyword: keyword.trimmingCharacters(in: .whitespacesAndNewlines), modules: named.isEmpty ? Set(Module.allCases) : named, importantOnly: text.contains("重要"))
+    }
+
+    private func draft(_ text: String) -> Record {
+        if text.contains("提醒") || text.contains("待办") || text.contains("明天") && text.contains("点") {
+            return Record(module: .todo, rawInput: text, content: todoContent(text), tags: tags(text, module: .todo), dueAt: date(in: text), reminderEnabled: text.contains("提醒"), status: .pending)
+        }
+        if text.contains("以后") || text.contains("想法") || text.contains("灵感") || text.contains("可以增加") {
+            return Record(module: .idea, rawInput: text, tags: tags(text, module: .idea))
+        }
+        if amount(in: text) != nil || ["美元", "支付", "购物", "付款", "花了"].contains(where: text.contains) {
+            return Record(module: .ledger, rawInput: text, tags: tags(text, module: .ledger), merchant: merchant(in: text), amount: amount(in: text), currency: text.contains("美元") || text.localizedCaseInsensitiveContains("USD") ? "USD" : nil, category: text.contains("购物") ? "购物" : nil, paymentMethod: payment(in: text), occurredAt: date(in: text) ?? now())
+        }
+        return Record(module: .memo, rawInput: text, tags: tags(text, module: .memo))
+    }
+
+    private func amount(in text: String) -> Decimal? {
+        guard let range = text.range(of: #"\d+(?:\.\d+)?(?=\s*(?:美元|USD|元))"#, options: [.regularExpression, .caseInsensitive]) else { return nil }
+        return Decimal(string: String(text[range]), locale: Locale(identifier: "en_US_POSIX"))
+    }
+
+    private func merchant(in text: String) -> String? { ["沃尔玛", "Walmart", "Costco", "Target", "亚马逊"].first(where: { text.localizedCaseInsensitiveContains($0) }) }
+    private func payment(in text: String) -> String? { ["美国银行", "Bank of America", "现金", "支付宝", "微信", "信用卡"].first(where: { text.localizedCaseInsensitiveContains($0) }) }
+
+    private func date(in text: String) -> Date? {
+        let offset = text.contains("后天") ? 2 : text.contains("明天") ? 1 : text.contains("今天") ? 0 : nil
+        guard let offset else { return nil }
+        var value = calendar.date(byAdding: .day, value: offset, to: now())!
+        if let range = text.range(of: #"(?:早上|上午|下午|晚上)?\s*(\d{1,2})(?:点|:)\s*(\d{1,2})?"#, options: .regularExpression) {
+            let parts = text[range].split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
+            if let hour = parts.first { value = calendar.date(bySettingHour: hour + ((text[range].contains("下午") || text[range].contains("晚上")) && hour < 12 ? 12 : 0), minute: parts.dropFirst().first ?? 0, second: 0, of: value)! }
+        }
+        return value
+    }
+
+    private func todoContent(_ text: String) -> String {
+        var value = text
+        ["提醒我", "提醒", "明天", "后天", "今天", "早上8点", "上午8点"].forEach { value = value.replacingOccurrences(of: $0, with: "") }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func tags(_ text: String, module: Module) -> [String] {
+        var values: [String] = []
+        let candidates = ["沃尔玛", "购物", "美国银行", "汽车", "早点", "早餐", "吃饭", "家庭模式"]
+        values += candidates.filter { text.localizedCaseInsensitiveContains($0) }
+        if module == .todo && (text.contains("早饭") || text.contains("早餐")) { values += ["早餐", "吃饭"] }
+        if module == .memo && text.contains("车") { values.append("汽车") }
+        if module == .idea { values.append("产品想法") }
+        return Array(values.reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }.prefix(5))
+    }
+}
 // Backup remains a separate, future system capability; saving never triggers backup, upload, or sharing.
 
 public protocol RecordStore: Sendable {
