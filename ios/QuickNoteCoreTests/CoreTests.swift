@@ -27,7 +27,7 @@ final class CoreTests: XCTestCase {
 
     func testSearchesStructuredFieldsAndTotalsNumbersByCurrency() throws {
         let core = QuickNoteCore(store: MemoryRecordStore(), identity: TestIdentity("owner"))
-        _ = try core.save(Record(module: .ledger, rawInput: "买2瓶水16美元", content: "买水", quantity: 2, amount: 16, currency: "USD", merchant: "商店"))
+        _ = try core.save(Record(module: .ledger, rawInput: "买2瓶水16美元", content: "买水", merchant: "商店", quantity: 2, amount: 16, currency: "USD"))
         _ = try core.save(Record(module: .memo, rawInput: "库存5000日元"))
         XCTAssertEqual(try core.search(RecordQuery(keyword: "商店")).count, 1)
         let totals = QuickNoteCore.numericTotals(in: try core.records())
