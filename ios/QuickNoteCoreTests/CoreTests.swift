@@ -31,7 +31,21 @@ final class CoreTests: XCTestCase {
         _ = try core.save(Record(module: .memo, rawInput: "库存5000日元"))
         XCTAssertEqual(try core.search(RecordQuery(keyword: "商店")).count, 1)
         let totals = QuickNoteCore.numericTotals(in: try core.records())
-        XCTAssertEqual(totals["USD"], 16); XCTAssertEqual(totals["JPY"], 5000)
+        XCTAssertEqual(totals["USD"], 16); XCTAssertNil(totals["JPY"])
+    }
+
+    func testPriorityRulesDatesMixedLanguageAndNumericRoles() async throws {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = Date(timeIntervalSince1970: 1_788_883_200), parser = DeterministicDraftParser(calendar: calendar, now: { now })
+        for text in ["明天早上8点吃早饭", "下周一提交方案", "后天上午十点看牙医"] { guard case .create(let value) = try await parser.parse(text) else { return XCTFail() }; XCTAssertEqual(value.module, .todo, text); XCTAssertNotNil(value.dueAt, text); XCTAssertEqual(value.content, text) }
+        for (text, amount, currency) in [("Target买东西42美元", 42, "USD"), ("买菜120块", 120, "CNY"), ("日元三千买午饭", 3000, "JPY"), ("买书25欧元", 25, "EUR"), ("Starbucks coffee 8 dollars", 8, "USD")] { guard case .create(let value) = try await parser.parse(text) else { return XCTFail() }; XCTAssertEqual(value.module, .ledger, text); XCTAssertEqual(value.amount, Decimal(amount), text); XCTAssertEqual(value.currency, currency, text) }
+        for text in ["B12", "房间1806", "2026年", "iPhone 17 Pro Max 256GB", "完成50%"] { guard case .create(let value) = try await parser.parse(text) else { return XCTFail() }; XCTAssertNil(value.amount, text); XCTAssertNil(value.quantity, text) }
+        guard case .create(let quantity) = try await parser.parse("买了2瓶水") else { return XCTFail() }; XCTAssertEqual(quantity.quantity, 2)
+    }
+
+    func testStructuredSearchRemovesGrammarFromKeyword() async throws {
+        let parser = DeterministicDraftParser()
+        for (text, modules, keyword) in [("找今天的记录", Set(Module.allCases), ""), ("找昨天的账目", [.ledger], ""), ("找这个月的购物", Set(Module.allCases), ""), ("找灵感里的家庭模式", [.idea], "家庭模式"), ("找账目和备忘里面的沃尔玛", [.ledger, .memo], "沃尔玛")] { guard case .search(let query) = try await parser.parse(text) else { return XCTFail() }; XCTAssertEqual(query.modules, modules, text); XCTAssertEqual(query.keyword, keyword, text) }
     }
 
     func testParserEmptyInputReturnsManualSafeDraft() async throws {
