@@ -96,9 +96,29 @@ public final class QuickNoteCore: @unchecked Sendable {
         var records = try store.load(), value = draft
         value.ownerID = ownerID; value.updatedAt = Date()
         if let index = records.firstIndex(where: { $0.id == value.id && $0.ownerID == ownerID }) {
-            value.createdAt = records[index].createdAt; value.rawInput = records[index].rawInput; records[index] = value
-        } else { records.append(value) }
+            value.createdAt = records[index].createdAt; value.rawInput = records[index].rawInput
+            value = normalizeForModule(value); records[index] = value
+        } else { value = normalizeForModule(value); records.append(value) }
         try store.save(records)
+        return value
+    }
+
+    private func normalizeForModule(_ record: Record) -> Record {
+        var value = record
+        switch value.module {
+        case .ledger:
+            value.dueAt = nil; value.reminderEnabled = false; value.status = nil
+        case .todo:
+            value.merchant = nil; value.amount = nil; value.currency = nil; value.category = nil
+            value.paymentMethod = nil; value.occurredAt = nil; value.status = value.status ?? .pending
+        case .memo:
+            value.merchant = nil; value.amount = nil; value.currency = nil; value.category = nil
+            value.paymentMethod = nil; value.occurredAt = nil; value.dueAt = nil; value.location = nil; value.status = nil
+        case .idea:
+            value.merchant = nil; value.amount = nil; value.currency = nil; value.category = nil
+            value.paymentMethod = nil; value.occurredAt = nil; value.dueAt = nil
+            value.reminderEnabled = false; value.location = nil; value.status = nil
+        }
         return value
     }
 

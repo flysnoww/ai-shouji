@@ -6,6 +6,11 @@ import XCTest
 #endif
 
 private final class TestIdentity: IdentityGate, @unchecked Sendable { var confirmedUserID: String?; init(_ id: String?) { confirmedUserID = id } }
+private final class SpyStore: RecordStore, @unchecked Sendable {
+    var records: [Record] = []; var saveCount = 0
+    func load() -> [Record] { records }
+    func save(_ records: [Record]) { saveCount += 1; self.records = records }
+}
 
 final class CoreTests: XCTestCase {
     func testCreateSearchUpdateAndTraceability() throws {
@@ -23,7 +28,35 @@ final class CoreTests: XCTestCase {
     }
 
     func testIdentityGateBlocksAnonymousSave() {
-        let core = QuickNoteCore(store: MemoryRecordStore(), identity: TestIdentity(nil))
+        let store = SpyStore(), core = QuickNoteCore(store: store, identity: TestIdentity(nil))
         XCTAssertThrowsError(try core.save(Record(module: .idea, rawInput: "秘密"))) { XCTAssertEqual($0 as? CoreError, .identityRequired) }
+        XCTAssertEqual(store.saveCount, 0)
+    }
+
+    func testModuleNormalizationPreservesRawInput() throws {
+        let core = QuickNoteCore(store: MemoryRecordStore(), identity: TestIdentity("user-1"))
+        var ledger = try core.save(Record(module: .ledger, rawInput: "原始账目", merchant: "商家", amount: 16, paymentMethod: "现金"))
+        ledger.module = .memo
+        let memo = try core.save(ledger)
+        XCTAssertNil(memo.merchant); XCTAssertNil(memo.amount); XCTAssertNil(memo.paymentMethod)
+        XCTAssertEqual(memo.rawInput, "原始账目")
+
+        var todo = try core.save(Record(module: .todo, rawInput: "原始待办", dueAt: Date(), reminderEnabled: true, status: .done))
+        todo.module = .idea
+        let idea = try core.save(todo)
+        XCTAssertNil(idea.dueAt); XCTAssertNil(idea.status); XCTAssertFalse(idea.reminderEnabled)
+        XCTAssertEqual(idea.rawInput, "原始待办")
+    }
+
+    func testUpdatePreservesCoreOwnedFieldsAndUpserts() throws {
+        let identity = TestIdentity("owner"), store = MemoryRecordStore(), core = QuickNoteCore(store: store, identity: identity)
+        let original = try core.save(Record(module: .memo, rawInput: "原始"))
+        var draft = original
+        draft.ownerID = "attacker"; draft.rawInput = "篡改"; draft.createdAt = .distantFuture; draft.content = "更新"
+        let updated = try core.save(draft)
+        XCTAssertEqual(updated.createdAt, original.createdAt)
+        XCTAssertEqual(updated.rawInput, original.rawInput)
+        XCTAssertEqual(updated.ownerID, "owner")
+        XCTAssertEqual(store.records.count, 1)
     }
 }
