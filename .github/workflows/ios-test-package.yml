@@ -1,0 +1,111 @@
+name: iOS Internal Test Package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-package:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift Core tests
+        working-directory: ios
+        run: swift test
+
+      - name: Xcode Simulator build
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project ios/AIQuickNote.xcodeproj \
+            -scheme AIQuickNote \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee xcodebuild-simulator-build.log
+
+      - name: Select simulator
+        run: |
+          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for runtime in d.values() for x in runtime if x["name"].startswith("iPhone")))')
+          echo "DEVICE_ID=$DEVICE_ID" >> "$GITHUB_ENV"
+
+      - name: Xcode unit tests
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project ios/AIQuickNote.xcodeproj \
+            -scheme AIQuickNote \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            -resultBundlePath TestResults.xcresult \
+            CODE_SIGNING_ALLOWED=NO | tee xcodebuild-test.log
+
+      - name: Build unsigned iPhone app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project ios/AIQuickNote.xcodeproj \
+            -scheme AIQuickNote \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee xcodebuild-device-build.log
+
+      - name: Package and verify unsigned IPA
+        run: |
+          APP_PATH="DerivedData/Build/Products/Release-iphoneos/AIQuickNote.app"
+          test -d "$APP_PATH"
+          mkdir -p package/Payload
+          cp -R "$APP_PATH" package/Payload/
+          (cd package && zip -qry ../AIQuickNote-V0-unsigned.ipa Payload)
+          unzip -Z1 AIQuickNote-V0-unsigned.ipa | grep -q '^Payload/AIQuickNote.app/'
+          test -s AIQuickNote-V0-unsigned.ipa
+
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")
+          BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist")
+          SIZE=$(stat -f%z AIQuickNote-V0-unsigned.ipa)
+          {
+            echo "Git commit: $GITHUB_SHA"
+            echo "Build date (UTC): $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo "Build configuration: Release (iphoneos, unsigned)"
+            echo "Bundle identifier: $BUNDLE_ID"
+            echo "App version: $VERSION"
+            echo "Build number: $BUILD"
+            echo "IPA size (bytes): $SIZE"
+            echo "Status: IMPLEMENTATION_CANDIDATE"
+            echo "Use: INTERNAL TEST ONLY"
+          } | tee build-info.txt
+          {
+            echo "## iOS internal test package"
+            echo
+            echo '```text'
+            cat build-info.txt
+            echo '```'
+            echo
+            echo "Verified: Payload/AIQuickNote.app exists in AIQuickNote-V0-unsigned.ipa"
+            echo "This IPA is unsigned and must be re-signed before installation."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload iPhone package
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIQuickNote-V0-iPhone
+          path: |
+            AIQuickNote-V0-unsigned.ipa
+            build-info.txt
+          if-no-files-found: error
+
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-test-package-failure-logs
+          path: |
+            xcodebuild-*.log
+            TestResults.xcresult
+          if-no-files-found: ignore
