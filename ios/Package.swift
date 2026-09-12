@@ -6,7 +6,7 @@ let package = Package(
     platforms: [.iOS(.v17), .macOS(.v13)],
     products: [.library(name: "QuickNoteCore", targets: ["QuickNoteCore"])],
     targets: [
-        .target(name: "QuickNoteCore", path: "ios/QuickNoteCore"),
-        .testTarget(name: "QuickNoteCoreTests", dependencies: ["QuickNoteCore"], path: "ios/QuickNoteCoreTests")
+        .target(name: "QuickNoteCore", path: "QuickNoteCore"),
+        .testTarget(name: "QuickNoteCoreTests", dependencies: ["QuickNoteCore"], path: "QuickNoteCoreTests")
     ]
 )

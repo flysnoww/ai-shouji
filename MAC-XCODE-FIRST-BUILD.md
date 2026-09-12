@@ -70,7 +70,7 @@
 2. 点击菜单 `Product → Test`，或按 `Command + U`。
 3. 左侧 Test Navigator 中应能看到 `AIQuickNoteTests` 和 `CoreTests`。
 4. 两个测试通过时会显示绿色对勾。
-5. 也可以在项目根目录打开“终端”，运行 `swift test`；它测试同一份 Core，但不启动 iOS App。
+5. 也可以在项目根目录打开“终端”，运行 `cd ios && swift test`；它测试同一份 Core，但不启动 iOS App。
 
 当前 Swift/Xcode 测试状态：`NOT RUN — requires macOS / Xcode`。
 
