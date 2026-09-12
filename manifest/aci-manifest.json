@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "aciVersion": "0.1",
+  "status": "IMPLEMENTATION_CANDIDATE",
+  "product": {"id": "ai_quicknote", "name": "AI随手记", "version": "0.1.0"},
+  "publicAiApi": {"version": "0.1.0", "stability": "experimental"},
+  "transport": {"definedByAci": false, "adapters": ["mcp-2026-07-28", "ios-app-intents-future", "android-intents-future"]},
+  "modules": [
+    {"id": "ledger", "name": "账目"}, {"id": "todo", "name": "待办"},
+    {"id": "memo", "name": "备忘"}, {"id": "idea", "name": "灵感"}
+  ],
+  "permissionProfile": {"actions": ["read", "write"], "durations": ["once", "continuous"], "scope": "module"},
+  "capabilities": [
+    {"name":"aci.ai_quicknote.ledger.create","title":"创建账目","description":"创建一条账目记录","action":"write","module":"ledger","inputSchema":"schemas/ledger.create.input.schema.json","outputSchema":"schemas/create.output.schema.json","annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true}},
+    {"name":"aci.ai_quicknote.todo.create","title":"创建待办","description":"创建一条待办记录","action":"write","module":"todo","inputSchema":"schemas/todo.create.input.schema.json","outputSchema":"schemas/create.output.schema.json","annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true}},
+    {"name":"aci.ai_quicknote.memo.create","title":"创建备忘","description":"创建一条备忘记录","action":"write","module":"memo","inputSchema":"schemas/common.create.input.schema.json","outputSchema":"schemas/create.output.schema.json","annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true}},
+    {"name":"aci.ai_quicknote.idea.create","title":"创建灵感","description":"创建一条灵感记录","action":"write","module":"idea","inputSchema":"schemas/common.create.input.schema.json","outputSchema":"schemas/create.output.schema.json","annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true}},
+    {"name":"aci.ai_quicknote.record.get","title":"读取记录","description":"按稳定 ID 读取一条记录","action":"read","module":"record","inputSchema":"schemas/record.get.input.schema.json","outputSchema":"schemas/get.output.schema.json","annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true}},
+    {"name":"aci.ai_quicknote.record.search","title":"搜索记录","description":"在获授权的模块范围内搜索记录","action":"read","module":"record","inputSchema":"schemas/record.search.input.schema.json","outputSchema":"schemas/search.output.schema.json","annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true}}
+  ]
+}
+

@@ -1,0 +1,9 @@
+[project]
+name = "quicknote-aci-reference"
+version = "0.1.0"
+description = "Open ACI Minimum Profile reference implementation for AI QuickNote"
+requires-python = ">=3.11"
+
+[tool.unittest]
+start-directory = "tests"
+

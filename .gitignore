@@ -1,0 +1,24 @@
+# OS / Xcode build and user state
+.DS_Store
+DerivedData/
+build/
+.build/
+*.xcuserstate
+xcuserdata/
+
+# Runtime and local private data
+__pycache__/
+*.py[cod]
+*.db
+*.sqlite*
+auth.json
+.env
+.env.*
+
+# Credentials
+*.pem
+*.p12
+*.mobileprovision
+
+# Source is already expanded in this repository
+quicknote-aci-reference.zip
