@@ -41,6 +41,7 @@ final class CoreTests: XCTestCase {
         for (text, amount, currency) in [("Target买东西42美元", 42, "USD"), ("买菜120块", 120, "CNY"), ("日元三千买午饭", 3000, "JPY"), ("买书25欧元", 25, "EUR"), ("Starbucks coffee 8 dollars", 8, "USD")] { guard case .create(let value) = try await parser.parse(text) else { return XCTFail() }; XCTAssertEqual(value.module, .ledger, text); XCTAssertEqual(value.amount, Decimal(amount), text); XCTAssertEqual(value.currency, currency, text) }
         for text in ["B12", "房间1806", "2026年", "iPhone 17 Pro Max 256GB", "完成50%"] { guard case .create(let value) = try await parser.parse(text) else { return XCTFail() }; XCTAssertNil(value.amount, text); XCTAssertNil(value.quantity, text) }
         guard case .create(let quantity) = try await parser.parse("买了2瓶水") else { return XCTFail() }; XCTAssertEqual(quantity.quantity, 2)
+        for text in ["下午三点开会", "九点半检查邮件"] { guard case .create(let value) = try await parser.parse(text) else { return XCTFail() }; XCTAssertNotNil(value.dueAt ?? value.occurredAt, text) }
     }
 
     func testStructuredSearchRemovesGrammarFromKeyword() async throws {
