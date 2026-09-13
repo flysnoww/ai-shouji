@@ -40,7 +40,7 @@ final class CoreTests: XCTestCase {
         for text in ["明天早上8点吃早饭", "下周一提交方案", "后天上午十点看牙医"] { guard case .create(let value) = try await parser.parse(text) else { return XCTFail() }; XCTAssertEqual(value.module, .todo, text); XCTAssertNotNil(value.dueAt, text); XCTAssertEqual(value.content, text) }
         for (text, amount, currency) in [("Target买东西42美元", 42, "USD"), ("买菜120块", 120, "CNY"), ("日元三千买午饭", 3000, "JPY"), ("买书25欧元", 25, "EUR"), ("Starbucks coffee 8 dollars", 8, "USD")] { guard case .create(let value) = try await parser.parse(text) else { return XCTFail() }; XCTAssertEqual(value.module, .ledger, text); XCTAssertEqual(value.amount, Decimal(amount), text); XCTAssertEqual(value.currency, currency, text) }
         for text in ["B12", "房间1806", "2026年", "iPhone 17 Pro Max 256GB", "完成50%"] { guard case .create(let value) = try await parser.parse(text) else { return XCTFail() }; XCTAssertNil(value.amount, text); XCTAssertNil(value.quantity, text) }
-        guard case .create(let quantity) = try await parser.parse("买了2瓶水") else { return XCTFail() }; XCTAssertEqual(quantity.quantity, 2)
+        guard case .create(let quantity) = try await parser.parse("买了2瓶水") else { return XCTFail() }; XCTAssertEqual(quantity.module, .memo); XCTAssertNil(quantity.quantity)
         for text in ["下午三点开会", "九点半检查邮件"] { guard case .create(let value) = try await parser.parse(text) else { return XCTFail() }; XCTAssertNotNil(value.dueAt ?? value.occurredAt, text) }
     }
 
@@ -95,8 +95,43 @@ final class CoreTests: XCTestCase {
         draft.ownerID = "attacker"; draft.rawInput = "篡改"; draft.createdAt = .distantFuture; draft.content = "更新"
         let updated = try core.save(draft)
         XCTAssertEqual(updated.createdAt, original.createdAt)
-        XCTAssertEqual(updated.rawInput, original.rawInput)
+        XCTAssertEqual(updated.rawInput, "篡改")
         XCTAssertEqual(updated.ownerID, "owner")
         XCTAssertEqual(store.records.count, 1)
+    }
+
+    func testLedgerOnlyQuantityMultipleAmountsAndTotals() async throws {
+        let parser = DeterministicDraftParser()
+        guard case .create(let two) = try await parser.parse("70美元和3000日元") else { return XCTFail() }
+        XCTAssertEqual(two.amountItems, [AmountItem(value: 70, currency: "USD"), AmountItem(value: 3000, currency: "JPY")]); XCTAssertNil(two.amount)
+        guard case .create(let three) = try await parser.parse("16美元3000日元25欧元") else { return XCTFail() }
+        XCTAssertEqual(three.amountItems.count, 3)
+        guard case .create(let memo) = try await parser.parse("B12车位有3箱水") else { return XCTFail() }
+        XCTAssertEqual(memo.module, .memo); XCTAssertNil(memo.quantity)
+        let totals = QuickNoteCore.numericTotals(in: [two, three, Record(module: .memo, rawInput: "库存5000日元", amount: 5000, currency: "JPY")])
+        XCTAssertEqual(totals["USD"], 86); XCTAssertEqual(totals["JPY"], 6000); XCTAssertEqual(totals["EUR"], 25)
+    }
+
+    func testAmountComparatorsNormalizationRelativeTimeAndRepeatHint() async throws {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = Date(timeIntervalSince1970: 1_800_000_000), parser = DeterministicDraftParser(calendar: calendar, now: { now })
+        guard case .search(let minimum) = try await parser.parse("找50美元以上的购物") else { return XCTFail() }
+        XCTAssertEqual(minimum.minimumAmount, 50); XCTAssertTrue(minimum.minimumInclusive); XCTAssertEqual(minimum.currency, "USD"); XCTAssertEqual(minimum.category, "购物"); XCTAssertFalse(minimum.keyword.contains("50"))
+        guard case .search(let maximum) = try await parser.parse("找少于50美元的代办") else { return XCTFail() }
+        XCTAssertEqual(maximum.maximumAmount, 50); XCTAssertFalse(maximum.maximumInclusive); XCTAssertEqual(maximum.modules, [.todo])
+        guard case .create(let relative) = try await parser.parse("两小时后提醒我关烤箱") else { return XCTFail() }
+        XCTAssertEqual(relative.module, .todo); XCTAssertEqual(relative.dueAt, calendar.date(byAdding: .hour, value: 2, to: now))
+        guard case .create(let repeating) = try await parser.parse("每周六打扫车库") else { return XCTFail() }
+        XCTAssertEqual(repeating.module, .todo); XCTAssertTrue(repeating.tags.contains("每周六")); XCTAssertNotNil(repeating.dueAt)
+    }
+
+    func testLegacyAmountDecodesAsOneAmountItemAndInclusiveSearchUsesItems() throws {
+        let old = Record(module: .ledger, rawInput: "旧账", amount: 50, currency: "USD")
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(old)) as? [String: Any]); object.removeValue(forKey: "amountItems")
+        let decoded = try JSONDecoder().decode(Record.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertEqual(decoded.amountItems, [AmountItem(value: 50, currency: "USD")])
+        let core = QuickNoteCore(store: MemoryRecordStore([Record(ownerID: "owner", module: .ledger, rawInput: "购物", amountItems: [AmountItem(value: 50, currency: "USD")])]), identity: TestIdentity("owner"))
+        XCTAssertEqual(try core.search(RecordQuery(minimumAmount: 50, minimumInclusive: true, currency: "USD")).count, 1)
+        XCTAssertEqual(try core.search(RecordQuery(minimumAmount: 50, currency: "USD")).count, 0)
     }
 }
