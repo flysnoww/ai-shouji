@@ -127,7 +127,7 @@ public struct DeterministicDraftParser: DraftParser {
 
     private func amountItems(in text: String) -> [AmountItem] {
         guard let regex = try? NSRegularExpression(pattern: #"(\d+(?:\.\d+)?)\s*(美元|dollars?|USD|日元|JPY|欧元|EUR|人民币|CNY|元|块)"#, options: .caseInsensitive) else { return [] }
-        let items = regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { match in
+        let items: [AmountItem] = regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { match in
             guard let valueRange = Range(match.range(at: 1), in: text), let unitRange = Range(match.range(at: 2), in: text), let value = Decimal(string: String(text[valueRange]), locale: Locale(identifier: "en_US_POSIX")) else { return nil }
             return AmountItem(value: value, currency: normalizedCurrency(String(text[unitRange])))
         }
