@@ -8,10 +8,64 @@ public enum Module: String, Codable, CaseIterable, Identifiable, Sendable {
 
 public enum TodoStatus: String, Codable, CaseIterable, Sendable { case pending = "待处理", done = "已完成" }
 
+public enum IdentityProvider: String, Codable, CaseIterable, Sendable { case apple, google, x, facebook }
+
+public struct IdentityUser: Codable, Hashable, Sendable {
+    public var id: String
+    public var provider: IdentityProvider
+    public var providerSubject: String
+    public var displayName: String
+    public var email: String?
+    public var createdAt: Date
+    public init(id: String, provider: IdentityProvider, providerSubject: String, displayName: String, email: String? = nil, createdAt: Date = Date()) { self.id = id; self.provider = provider; self.providerSubject = providerSubject; self.displayName = displayName; self.email = email; self.createdAt = createdAt }
+}
+
+public protocol AuthProvider: Sendable {
+    var providerID: IdentityProvider { get }
+    var displayName: String { get }
+    func signIn(account: Int) async throws -> IdentityUser
+}
+
+public struct MockAuthProvider: AuthProvider {
+    public let providerID: IdentityProvider
+    public var displayName: String { providerID == .x ? "X" : providerID.rawValue.capitalized }
+    public init(_ providerID: IdentityProvider) { self.providerID = providerID }
+    public func signIn(account: Int) async throws -> IdentityUser {
+        let slot = account == 2 ? 2 : 1
+        let ids: [IdentityProvider: [String]] = [
+            .apple: ["00000000-0000-4000-8000-000000000101", "00000000-0000-4000-8000-000000000102"],
+            .google: ["00000000-0000-4000-8000-000000000201", "00000000-0000-4000-8000-000000000202"],
+            .x: ["00000000-0000-4000-8000-000000000301", "00000000-0000-4000-8000-000000000302"],
+            .facebook: ["00000000-0000-4000-8000-000000000401", "00000000-0000-4000-8000-000000000402"]
+        ]
+        return IdentityUser(id: ids[providerID]![slot - 1], provider: providerID, providerSubject: "mock-\(providerID.rawValue)-user-00\(slot)", displayName: "Test User \(slot)", email: "test\(slot)@example.invalid", createdAt: Date(timeIntervalSince1970: 0))
+    }
+}
+
+public enum CurrencyCanonicalizer {
+    public static func canonical(_ value: String?) -> String? {
+        guard let raw = value?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
+        let upper = raw.uppercased()
+        if ["USD", "$", "美元", "美金", "DOLLAR", "DOLLARS"].contains(upper) { return "USD" }
+        if ["JPY", "日元", "円", "YEN"].contains(upper) { return "JPY" }
+        if ["EUR", "欧元", "€"].contains(upper) { return "EUR" }
+        if ["CNY", "RMB", "人民币", "元", "块", "¥", "￥"].contains(upper) { return "CNY" }
+        if ["GBP", "英镑", "£"].contains(upper) { return "GBP" }
+        return upper
+    }
+    public static func displayName(_ value: String?, languageCode: String) -> String? {
+        guard let code = canonical(value) else { return nil }
+        guard languageCode.lowercased().hasPrefix("zh") else { return code }
+        return ["USD": "美元", "JPY": "日元", "EUR": "欧元", "CNY": "人民币", "GBP": "英镑"][code] ?? code
+    }
+}
+
 public struct AmountItem: Codable, Hashable, Sendable {
     public var value: Decimal
     public var currency: String?
-    public init(value: Decimal, currency: String? = nil) { self.value = value; self.currency = currency }
+    public init(value: Decimal, currency: String? = nil) { self.value = value; self.currency = CurrencyCanonicalizer.canonical(currency) }
+    private enum CodingKeys: String, CodingKey { case value, currency }
+    public init(from decoder: Decoder) throws { let box = try decoder.container(keyedBy: CodingKeys.self); value = try box.decode(Decimal.self, forKey: .value); currency = CurrencyCanonicalizer.canonical(try box.decodeIfPresent(String.self, forKey: .currency)) }
 }
 
 public struct Record: Identifiable, Codable, Hashable, Sendable {
@@ -44,13 +98,13 @@ public struct Record: Identifiable, Codable, Hashable, Sendable {
         self.id = id; self.ownerID = ownerID; self.module = module; self.rawInput = rawInput
         self.content = content ?? rawInput; self.important = important; self.tags = tags
         self.createdAt = createdAt; self.updatedAt = updatedAt; self.merchant = merchant; self.amount = amount
-        self.currency = currency; self.amountItems = amountItems.isEmpty ? amount.map { [AmountItem(value: $0, currency: currency)] } ?? [] : amountItems; self.category = category; self.paymentMethod = paymentMethod
+        self.currency = CurrencyCanonicalizer.canonical(currency); self.amountItems = amountItems.isEmpty ? amount.map { [AmountItem(value: $0, currency: currency)] } ?? [] : amountItems.map { AmountItem(value: $0.value, currency: $0.currency) }; self.category = category; self.paymentMethod = paymentMethod
         self.occurredAt = occurredAt; self.dueAt = dueAt; self.reminderEnabled = reminderEnabled
         self.location = location; self.status = status
     }
 
     private enum CodingKeys: String, CodingKey { case id, ownerID, module, rawInput, content, important, tags, createdAt, updatedAt, merchant, amount, currency, amountItems, category, paymentMethod, occurredAt, dueAt, reminderEnabled, location, status }
-    public init(from decoder: Decoder) throws { let box = try decoder.container(keyedBy: CodingKeys.self); let legacyAmount = try box.decodeIfPresent(Decimal.self, forKey: .amount), legacyCurrency = try box.decodeIfPresent(String.self, forKey: .currency); id = try box.decode(UUID.self, forKey: .id); ownerID = try box.decode(String.self, forKey: .ownerID); module = try box.decode(Module.self, forKey: .module); rawInput = try box.decode(String.self, forKey: .rawInput); content = try box.decode(String.self, forKey: .content); important = try box.decode(Bool.self, forKey: .important); tags = try box.decode([String].self, forKey: .tags); createdAt = try box.decode(Date.self, forKey: .createdAt); updatedAt = try box.decode(Date.self, forKey: .updatedAt); merchant = try box.decodeIfPresent(String.self, forKey: .merchant); amount = legacyAmount; currency = legacyCurrency; amountItems = try box.decodeIfPresent([AmountItem].self, forKey: .amountItems) ?? legacyAmount.map { [AmountItem(value: $0, currency: legacyCurrency)] } ?? []; category = try box.decodeIfPresent(String.self, forKey: .category); paymentMethod = try box.decodeIfPresent(String.self, forKey: .paymentMethod); occurredAt = try box.decodeIfPresent(Date.self, forKey: .occurredAt); dueAt = try box.decodeIfPresent(Date.self, forKey: .dueAt); reminderEnabled = try box.decode(Bool.self, forKey: .reminderEnabled); location = try box.decodeIfPresent(String.self, forKey: .location); status = try box.decodeIfPresent(TodoStatus.self, forKey: .status) }
+    public init(from decoder: Decoder) throws { let box = try decoder.container(keyedBy: CodingKeys.self); let legacyAmount = try box.decodeIfPresent(Decimal.self, forKey: .amount), legacyCurrency = CurrencyCanonicalizer.canonical(try box.decodeIfPresent(String.self, forKey: .currency)); id = try box.decode(UUID.self, forKey: .id); ownerID = try box.decode(String.self, forKey: .ownerID); module = try box.decode(Module.self, forKey: .module); rawInput = try box.decode(String.self, forKey: .rawInput); content = try box.decode(String.self, forKey: .content); important = try box.decode(Bool.self, forKey: .important); tags = try box.decode([String].self, forKey: .tags); createdAt = try box.decode(Date.self, forKey: .createdAt); updatedAt = try box.decode(Date.self, forKey: .updatedAt); merchant = try box.decodeIfPresent(String.self, forKey: .merchant); amount = legacyAmount; currency = legacyCurrency; amountItems = try box.decodeIfPresent([AmountItem].self, forKey: .amountItems) ?? legacyAmount.map { [AmountItem(value: $0, currency: legacyCurrency)] } ?? []; category = try box.decodeIfPresent(String.self, forKey: .category); paymentMethod = try box.decodeIfPresent(String.self, forKey: .paymentMethod); occurredAt = try box.decodeIfPresent(Date.self, forKey: .occurredAt); dueAt = try box.decodeIfPresent(Date.self, forKey: .dueAt); reminderEnabled = try box.decode(Bool.self, forKey: .reminderEnabled); location = try box.decodeIfPresent(String.self, forKey: .location); status = try box.decodeIfPresent(TodoStatus.self, forKey: .status) }
 }
 
 public struct RecordQuery: Sendable, Equatable {
@@ -125,8 +179,9 @@ public struct DeterministicDraftParser: DraftParser {
     }
 
     private func amountItems(in text: String) -> [AmountItem] {
-        if let regex = try? NSRegularExpression(pattern: #"(?:一共|总共|合计|共|总价|total)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(美元|dollars?|USD|日元|JPY|欧元|EUR|人民币|CNY|元|块)"#, options: .caseInsensitive), let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)), let valueRange = Range(match.range(at: 1), in: text), let unitRange = Range(match.range(at: 2), in: text), let value = Decimal(string: String(text[valueRange]), locale: Locale(identifier: "en_US_POSIX")) { return [AmountItem(value: value, currency: normalizedCurrency(String(text[unitRange])))] }
-        guard let regex = try? NSRegularExpression(pattern: #"(\d+(?:\.\d+)?)\s*(美元|dollars?|USD|日元|JPY|欧元|EUR|人民币|CNY|元|块)"#, options: .caseInsensitive) else { return [] }
+        if let regex = try? NSRegularExpression(pattern: #"(?:一共|总共|合计|共|总价|total)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(美元|美金|dollars?|USD|日元|JPY|円|yen|欧元|EUR|€|人民币|CNY|RMB|元|块)"#, options: .caseInsensitive), let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)), let valueRange = Range(match.range(at: 1), in: text), let unitRange = Range(match.range(at: 2), in: text), let value = Decimal(string: String(text[valueRange]), locale: Locale(identifier: "en_US_POSIX")) { return [AmountItem(value: value, currency: normalizedCurrency(String(text[unitRange])))] }
+        if let regex = try? NSRegularExpression(pattern: #"(\$|€|¥|￥|£)\s*(\d+(?:\.\d+)?)"#), let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)), let unitRange = Range(match.range(at: 1), in: text), let valueRange = Range(match.range(at: 2), in: text), let value = Decimal(string: String(text[valueRange]), locale: Locale(identifier: "en_US_POSIX")) { return [AmountItem(value: value, currency: normalizedCurrency(String(text[unitRange])))] }
+        guard let regex = try? NSRegularExpression(pattern: #"(\d+(?:\.\d+)?)\s*(美元|美金|dollars?|USD|日元|JPY|円|yen|欧元|EUR|€|人民币|CNY|RMB|元|块|\$|¥|￥|£)"#, options: .caseInsensitive) else { return [] }
         let items: [AmountItem] = regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { match in
             guard let fullRange = Range(match.range, in: text), let valueRange = Range(match.range(at: 1), in: text), let unitRange = Range(match.range(at: 2), in: text), let value = Decimal(string: String(text[valueRange]), locale: Locale(identifier: "en_US_POSIX")) else { return nil }
             let prefix = String(text[..<fullRange.lowerBound].suffix(8))
@@ -140,13 +195,13 @@ public struct DeterministicDraftParser: DraftParser {
     }
 
     private func currency(in text: String) -> String? {
-        if text.contains("美元") || text.localizedCaseInsensitiveContains("USD") || text.localizedCaseInsensitiveContains("dollar") || text.contains("$") { return "USD" }
-        if text.contains("日元") || text.localizedCaseInsensitiveContains("JPY") { return "JPY" }
-        if text.contains("欧元") || text.localizedCaseInsensitiveContains("EUR") { return "EUR" }
-        if text.contains("人民币") || text.localizedCaseInsensitiveContains("CNY") || text.contains("元") || text.contains("块") { return "CNY" }
+        if text.contains("美元") || text.contains("美金") || text.localizedCaseInsensitiveContains("USD") || text.localizedCaseInsensitiveContains("dollar") || text.contains("$") { return "USD" }
+        if text.contains("日元") || text.contains("円") || text.localizedCaseInsensitiveContains("JPY") || text.localizedCaseInsensitiveContains("yen") { return "JPY" }
+        if text.contains("欧元") || text.localizedCaseInsensitiveContains("EUR") || text.contains("€") { return "EUR" }
+        if text.contains("人民币") || text.localizedCaseInsensitiveContains("CNY") || text.localizedCaseInsensitiveContains("RMB") || text.contains("元") || text.contains("块") || text.contains("¥") || text.contains("￥") { return "CNY" }
         return nil
     }
-    private func normalizedCurrency(_ value: String) -> String { if value.localizedCaseInsensitiveContains("USD") || value.localizedCaseInsensitiveContains("dollar") || value == "美元" { return "USD" }; if value.localizedCaseInsensitiveContains("JPY") || value == "日元" { return "JPY" }; if value.localizedCaseInsensitiveContains("EUR") || value == "欧元" { return "EUR" }; return "CNY" }
+    private func normalizedCurrency(_ value: String) -> String { CurrencyCanonicalizer.canonical(value) ?? value.uppercased() }
 
     private func merchant(in text: String) -> String? { ["沃尔玛", "Walmart", "Costco", "Target", "Amazon", "亚马逊", "Starbucks"].first(where: { text.localizedCaseInsensitiveContains($0) }) }
     private func payment(in text: String) -> String? { ["美国银行", "Bank of America", "Visa", "现金", "支付宝", "微信", "信用卡"].first(where: { text.localizedCaseInsensitiveContains($0) }) }
@@ -237,6 +292,8 @@ public final class QuickNoteCore: @unchecked Sendable {
         var value = record
         switch value.module {
         case .ledger:
+            value.currency = CurrencyCanonicalizer.canonical(value.currency)
+            value.amountItems = value.amountItems.map { AmountItem(value: $0.value, currency: $0.currency) }
             if value.amountItems.isEmpty, let amount = value.amount { value.amountItems = [AmountItem(value: amount, currency: value.currency)] }
             if value.amountItems.count == 1 { value.amount = value.amountItems[0].value; value.currency = value.amountItems[0].currency }
             if value.amountItems.count > 1 { value.amount = nil; value.currency = nil }
@@ -260,18 +317,21 @@ public final class QuickNoteCore: @unchecked Sendable {
         return try store.load().filter { $0.ownerID == ownerID && (module == nil || $0.module == module) }.sorted { ($0.occurredAt ?? $0.createdAt) > ($1.occurredAt ?? $1.createdAt) }
     }
 
-    public func search(_ query: RecordQuery) throws -> [Record] {
-        try records().filter { record in
+    public func search(_ query: RecordQuery) throws -> [Record] { Self.search(query, in: try records()) }
+
+    public static func search(_ query: RecordQuery, in records: [Record]) -> [Record] {
+        let queryCurrency = CurrencyCanonicalizer.canonical(query.currency)
+        return records.filter { record in
             let amountFields = record.amountItems.flatMap { [String(describing: $0.value), $0.currency].compactMap { $0 } }
             let fields = [record.merchant, record.currency, record.category, record.paymentMethod, record.location, record.amount.map(String.init(describing:))].compactMap { $0 } + amountFields
             let haystack = ([record.content, record.rawInput] + record.tags + fields).joined(separator: " ")
-            let comparableAmounts = record.amountItems.filter { query.currency == nil || $0.currency == query.currency }.map(\.value)
+            let comparableAmounts = record.amountItems.filter { queryCurrency == nil || CurrencyCanonicalizer.canonical($0.currency) == queryCurrency }.map(\.value)
             return query.modules.contains(record.module)
                 && (!query.importantOnly || record.important)
                 && (query.keyword.isEmpty || haystack.localizedCaseInsensitiveContains(query.keyword))
                 && query.tags.allSatisfy { record.tags.contains($0) }
                 && (query.category == nil || record.category == query.category || record.tags.contains(query.category!))
-                && (query.currency == nil || !comparableAmounts.isEmpty)
+                && (queryCurrency == nil || !comparableAmounts.isEmpty)
                 && (query.minimumAmount == nil || comparableAmounts.contains { query.minimumInclusive ? $0 >= query.minimumAmount! : $0 > query.minimumAmount! })
                 && (query.maximumAmount == nil || comparableAmounts.contains { query.maximumInclusive ? $0 <= query.maximumAmount! : $0 < query.maximumAmount! })
                 && (query.dateStart == nil || ((record.occurredAt ?? record.dueAt ?? record.createdAt) >= query.dateStart!))
@@ -281,7 +341,7 @@ public final class QuickNoteCore: @unchecked Sendable {
 
     public static func numericTotals(in records: [Record]) -> [String: Decimal] {
         records.filter { $0.module == .ledger }.reduce(into: [:]) { totals, record in
-            for item in record.amountItems { totals[item.currency ?? "未标币种", default: 0] += item.value }
+            for item in record.amountItems { totals[CurrencyCanonicalizer.canonical(item.currency) ?? "未标币种", default: 0] += item.value }
         }
     }
 }

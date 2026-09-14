@@ -155,4 +155,30 @@ final class CoreTests: XCTestCase {
         let saved = try core.save(edited)
         XCTAssertEqual(saved.createdAt, sep12); XCTAssertGreaterThan(saved.updatedAt, sep12); XCTAssertEqual(store.saveCount, before + 1)
     }
+
+    func testMockIdentityIsStableAndRecordsAreOwnerIsolated() async throws {
+        let provider = MockAuthProvider(.google), userA = try await provider.signIn(account: 1), userAAgain = try await provider.signIn(account: 1), userB = try await provider.signIn(account: 2)
+        XCTAssertEqual(userA.id, userAAgain.id); XCTAssertNotEqual(userA.id, userB.id)
+        let identity = TestIdentity(nil), store = MemoryRecordStore(), core = QuickNoteCore(store: store, identity: identity)
+        XCTAssertEqual(try core.records(), [])
+        XCTAssertThrowsError(try core.save(Record(module: .ledger, rawInput: "沃尔玛16美元")))
+        identity.confirmedUserID = userA.id; _ = try core.save(Record(module: .ledger, rawInput: "沃尔玛16美元", amount: 16, currency: "美元"))
+        identity.confirmedUserID = userB.id; XCTAssertEqual(try core.records(), []); _ = try core.save(Record(module: .todo, rawInput: "明天买牛奶"))
+        XCTAssertEqual(try core.records().map(\.rawInput), ["明天买牛奶"])
+        identity.confirmedUserID = nil; XCTAssertEqual(try core.records(), []); XCTAssertEqual(store.records.count, 2)
+        identity.confirmedUserID = userA.id; XCTAssertEqual(try core.records().map(\.rawInput), ["沃尔玛16美元"]); XCTAssertEqual(try core.records().first?.ownerID, userA.id)
+    }
+
+    func testCurrencyCanonicalizationLocalizationAndLegacyTotals() async throws {
+        let parser = DeterministicDraftParser()
+        for (text, code) in [("16美元", "USD"), ("16 USD", "USD"), ("16 dollars", "USD"), ("$16", "USD"), ("3000日元", "JPY"), ("25欧元", "EUR"), ("16美金", "USD"), ("3000 yen", "JPY")] {
+            guard case .create(let record) = try await parser.parse(text) else { return XCTFail(text) }
+            XCTAssertEqual(record.currency, code, text)
+        }
+        let legacyUSD = Record(module: .ledger, rawInput: "旧记录", amount: 16, currency: "美元")
+        let totals = QuickNoteCore.numericTotals(in: [legacyUSD, Record(module: .ledger, rawInput: "new", amount: 70, currency: "USD")])
+        XCTAssertEqual(totals, ["USD": 86]); XCTAssertEqual(CurrencyCanonicalizer.displayName("USD", languageCode: "zh-CN"), "美元"); XCTAssertEqual(CurrencyCanonicalizer.displayName("美元", languageCode: "en-US"), "USD")
+        let core = QuickNoteCore(store: MemoryRecordStore([Record(ownerID: "owner", module: .ledger, rawInput: "旧记录", amount: 16, currency: "美元")]), identity: TestIdentity("owner"))
+        XCTAssertEqual(try core.search(RecordQuery(currency: "USD")).count, 1)
+    }
 }
