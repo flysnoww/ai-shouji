@@ -25,7 +25,6 @@ public struct Record: Identifiable, Codable, Hashable, Sendable {
     public var createdAt: Date
     public var updatedAt: Date
     public var merchant: String?
-    public var quantity: Decimal?
     public var amount: Decimal?
     public var currency: String?
     public var amountItems: [AmountItem]
@@ -39,19 +38,19 @@ public struct Record: Identifiable, Codable, Hashable, Sendable {
 
     public init(id: UUID = UUID(), ownerID: String = "", module: Module, rawInput: String, content: String? = nil,
                 important: Bool = false, tags: [String] = [], createdAt: Date = Date(), updatedAt: Date = Date(),
-                merchant: String? = nil, quantity: Decimal? = nil, amount: Decimal? = nil, currency: String? = nil, amountItems: [AmountItem] = [], category: String? = nil,
+                merchant: String? = nil, amount: Decimal? = nil, currency: String? = nil, amountItems: [AmountItem] = [], category: String? = nil,
                 paymentMethod: String? = nil, occurredAt: Date? = nil, dueAt: Date? = nil,
                 reminderEnabled: Bool = false, location: String? = nil, status: TodoStatus? = nil) {
         self.id = id; self.ownerID = ownerID; self.module = module; self.rawInput = rawInput
         self.content = content ?? rawInput; self.important = important; self.tags = tags
-        self.createdAt = createdAt; self.updatedAt = updatedAt; self.merchant = merchant; self.quantity = quantity; self.amount = amount
+        self.createdAt = createdAt; self.updatedAt = updatedAt; self.merchant = merchant; self.amount = amount
         self.currency = currency; self.amountItems = amountItems.isEmpty ? amount.map { [AmountItem(value: $0, currency: currency)] } ?? [] : amountItems; self.category = category; self.paymentMethod = paymentMethod
         self.occurredAt = occurredAt; self.dueAt = dueAt; self.reminderEnabled = reminderEnabled
         self.location = location; self.status = status
     }
 
-    private enum CodingKeys: String, CodingKey { case id, ownerID, module, rawInput, content, important, tags, createdAt, updatedAt, merchant, quantity, amount, currency, amountItems, category, paymentMethod, occurredAt, dueAt, reminderEnabled, location, status }
-    public init(from decoder: Decoder) throws { let box = try decoder.container(keyedBy: CodingKeys.self); let legacyAmount = try box.decodeIfPresent(Decimal.self, forKey: .amount), legacyCurrency = try box.decodeIfPresent(String.self, forKey: .currency); id = try box.decode(UUID.self, forKey: .id); ownerID = try box.decode(String.self, forKey: .ownerID); module = try box.decode(Module.self, forKey: .module); rawInput = try box.decode(String.self, forKey: .rawInput); content = try box.decode(String.self, forKey: .content); important = try box.decode(Bool.self, forKey: .important); tags = try box.decode([String].self, forKey: .tags); createdAt = try box.decode(Date.self, forKey: .createdAt); updatedAt = try box.decode(Date.self, forKey: .updatedAt); merchant = try box.decodeIfPresent(String.self, forKey: .merchant); quantity = try box.decodeIfPresent(Decimal.self, forKey: .quantity); amount = legacyAmount; currency = legacyCurrency; amountItems = try box.decodeIfPresent([AmountItem].self, forKey: .amountItems) ?? legacyAmount.map { [AmountItem(value: $0, currency: legacyCurrency)] } ?? []; category = try box.decodeIfPresent(String.self, forKey: .category); paymentMethod = try box.decodeIfPresent(String.self, forKey: .paymentMethod); occurredAt = try box.decodeIfPresent(Date.self, forKey: .occurredAt); dueAt = try box.decodeIfPresent(Date.self, forKey: .dueAt); reminderEnabled = try box.decode(Bool.self, forKey: .reminderEnabled); location = try box.decodeIfPresent(String.self, forKey: .location); status = try box.decodeIfPresent(TodoStatus.self, forKey: .status) }
+    private enum CodingKeys: String, CodingKey { case id, ownerID, module, rawInput, content, important, tags, createdAt, updatedAt, merchant, amount, currency, amountItems, category, paymentMethod, occurredAt, dueAt, reminderEnabled, location, status }
+    public init(from decoder: Decoder) throws { let box = try decoder.container(keyedBy: CodingKeys.self); let legacyAmount = try box.decodeIfPresent(Decimal.self, forKey: .amount), legacyCurrency = try box.decodeIfPresent(String.self, forKey: .currency); id = try box.decode(UUID.self, forKey: .id); ownerID = try box.decode(String.self, forKey: .ownerID); module = try box.decode(Module.self, forKey: .module); rawInput = try box.decode(String.self, forKey: .rawInput); content = try box.decode(String.self, forKey: .content); important = try box.decode(Bool.self, forKey: .important); tags = try box.decode([String].self, forKey: .tags); createdAt = try box.decode(Date.self, forKey: .createdAt); updatedAt = try box.decode(Date.self, forKey: .updatedAt); merchant = try box.decodeIfPresent(String.self, forKey: .merchant); amount = legacyAmount; currency = legacyCurrency; amountItems = try box.decodeIfPresent([AmountItem].self, forKey: .amountItems) ?? legacyAmount.map { [AmountItem(value: $0, currency: legacyCurrency)] } ?? []; category = try box.decodeIfPresent(String.self, forKey: .category); paymentMethod = try box.decodeIfPresent(String.self, forKey: .paymentMethod); occurredAt = try box.decodeIfPresent(Date.self, forKey: .occurredAt); dueAt = try box.decodeIfPresent(Date.self, forKey: .dueAt); reminderEnabled = try box.decode(Bool.self, forKey: .reminderEnabled); location = try box.decodeIfPresent(String.self, forKey: .location); status = try box.decodeIfPresent(TodoStatus.self, forKey: .status) }
 }
 
 public struct RecordQuery: Sendable, Equatable {
@@ -114,7 +113,7 @@ public struct DeterministicDraftParser: DraftParser {
     private func draft(_ text: String) -> Record {
         if hasMoney(in: text) {
             let items = amountItems(in: text), single = items.count == 1 ? items.first : nil
-            return Record(module: .ledger, rawInput: text, tags: tags(text, module: .ledger), merchant: merchant(in: text), quantity: quantity(in: text), amount: single?.value, currency: single?.currency, amountItems: items, category: category(in: text), paymentMethod: payment(in: text), occurredAt: date(in: text) ?? now())
+            return Record(module: .ledger, rawInput: text, tags: tags(text, module: .ledger), merchant: merchant(in: text), amount: single?.value, currency: single?.currency, amountItems: items, category: category(in: text), paymentMethod: payment(in: text), occurredAt: date(in: text))
         }
         if text.contains("提醒") || text.contains("待办") || (hasFutureTime(in: text) && hasAction(in: text)) || text.contains("别忘了") {
             return Record(module: .todo, rawInput: text, tags: tags(text, module: .todo), dueAt: date(in: text), reminderEnabled: text.contains("提醒"), status: .pending)
@@ -126,20 +125,18 @@ public struct DeterministicDraftParser: DraftParser {
     }
 
     private func amountItems(in text: String) -> [AmountItem] {
+        if let regex = try? NSRegularExpression(pattern: #"(?:一共|总共|合计|共|总价|total)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(美元|dollars?|USD|日元|JPY|欧元|EUR|人民币|CNY|元|块)"#, options: .caseInsensitive), let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)), let valueRange = Range(match.range(at: 1), in: text), let unitRange = Range(match.range(at: 2), in: text), let value = Decimal(string: String(text[valueRange]), locale: Locale(identifier: "en_US_POSIX")) { return [AmountItem(value: value, currency: normalizedCurrency(String(text[unitRange])))] }
         guard let regex = try? NSRegularExpression(pattern: #"(\d+(?:\.\d+)?)\s*(美元|dollars?|USD|日元|JPY|欧元|EUR|人民币|CNY|元|块)"#, options: .caseInsensitive) else { return [] }
         let items: [AmountItem] = regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { match in
-            guard let valueRange = Range(match.range(at: 1), in: text), let unitRange = Range(match.range(at: 2), in: text), let value = Decimal(string: String(text[valueRange]), locale: Locale(identifier: "en_US_POSIX")) else { return nil }
+            guard let fullRange = Range(match.range, in: text), let valueRange = Range(match.range(at: 1), in: text), let unitRange = Range(match.range(at: 2), in: text), let value = Decimal(string: String(text[valueRange]), locale: Locale(identifier: "en_US_POSIX")) else { return nil }
+            let prefix = String(text[..<fullRange.lowerBound].suffix(8))
+            guard prefix.range(of: #"(?:每盒|每个|每件|每瓶|每台|每本|每份|每箱|单价|each|per)\s*$"#, options: [.regularExpression, .caseInsensitive]) == nil else { return nil }
             return AmountItem(value: value, currency: normalizedCurrency(String(text[unitRange])))
         }
         if !items.isEmpty { return items }
         if let value = capture(in: text, pattern: #"([零〇一二两三四五六七八九十百千万]+)\s*(美元|日元|欧元|人民币|元|块)"#), let unit = capture(in: text, pattern: #"[零〇一二两三四五六七八九十百千万]+\s*(美元|日元|欧元|人民币|元|块)"#) { return [AmountItem(value: Decimal(chineseNumber(value)), currency: normalizedCurrency(unit))] }
         if let unit = capture(in: text, pattern: #"(美元|日元|欧元|人民币)\s*[零〇一二两三四五六七八九十百千万]+"#), let value = capture(in: text, pattern: #"(?:美元|日元|欧元|人民币)\s*([零〇一二两三四五六七八九十百千万]+)"#) { return [AmountItem(value: Decimal(chineseNumber(value)), currency: normalizedCurrency(unit))] }
         return []
-    }
-
-    private func quantity(in text: String) -> Decimal? {
-        guard let range = text.range(of: #"\d+(?:\.\d+)?(?=\s*(?:个|件|瓶|盒|台|本|箱|份))"#, options: .regularExpression) else { return nil }
-        return Decimal(string: String(text[range]), locale: Locale(identifier: "en_US_POSIX"))
     }
 
     private func currency(in text: String) -> String? {
@@ -225,11 +222,13 @@ public final class QuickNoteCore: @unchecked Sendable {
         guard let ownerID = identity.confirmedUserID else { throw CoreError.identityRequired }
         guard !draft.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CoreError.emptyContent }
         var records = try store.load(), value = draft
-        value.ownerID = ownerID; value.updatedAt = Date()
+        value.ownerID = ownerID
         if let index = records.firstIndex(where: { $0.id == value.id && $0.ownerID == ownerID }) {
             value.createdAt = records[index].createdAt
-            value = normalizeForModule(value); records[index] = value
-        } else { value = normalizeForModule(value); records.append(value) }
+            value = normalizeForModule(value); value.updatedAt = records[index].updatedAt
+            guard value != records[index] else { return records[index] }
+            value.updatedAt = Date(); records[index] = value
+        } else { value = normalizeForModule(value); value.updatedAt = value.createdAt; records.append(value) }
         try store.save(records)
         return value
     }
@@ -243,13 +242,13 @@ public final class QuickNoteCore: @unchecked Sendable {
             if value.amountItems.count > 1 { value.amount = nil; value.currency = nil }
             value.dueAt = nil; value.reminderEnabled = false; value.status = nil
         case .todo:
-            value.merchant = nil; value.quantity = nil; value.amount = nil; value.currency = nil; value.amountItems = []; value.category = nil
+            value.merchant = nil; value.amount = nil; value.currency = nil; value.amountItems = []; value.category = nil
             value.paymentMethod = nil; value.occurredAt = nil; value.status = value.status ?? .pending
         case .memo:
-            value.merchant = nil; value.quantity = nil; value.amount = nil; value.currency = nil; value.amountItems = []; value.category = nil
+            value.merchant = nil; value.amount = nil; value.currency = nil; value.amountItems = []; value.category = nil
             value.paymentMethod = nil; value.occurredAt = nil; value.dueAt = nil; value.location = nil; value.status = nil
         case .idea:
-            value.merchant = nil; value.quantity = nil; value.amount = nil; value.currency = nil; value.amountItems = []; value.category = nil
+            value.merchant = nil; value.amount = nil; value.currency = nil; value.amountItems = []; value.category = nil
             value.paymentMethod = nil; value.occurredAt = nil; value.dueAt = nil
             value.reminderEnabled = false; value.location = nil; value.status = nil
         }
@@ -258,13 +257,13 @@ public final class QuickNoteCore: @unchecked Sendable {
 
     public func records(module: Module? = nil) throws -> [Record] {
         guard let ownerID = identity.confirmedUserID else { return [] }
-        return try store.load().filter { $0.ownerID == ownerID && (module == nil || $0.module == module) }.sorted { $0.updatedAt > $1.updatedAt }
+        return try store.load().filter { $0.ownerID == ownerID && (module == nil || $0.module == module) }.sorted { ($0.occurredAt ?? $0.createdAt) > ($1.occurredAt ?? $1.createdAt) }
     }
 
     public func search(_ query: RecordQuery) throws -> [Record] {
         try records().filter { record in
             let amountFields = record.amountItems.flatMap { [String(describing: $0.value), $0.currency].compactMap { $0 } }
-            let fields = [record.merchant, record.currency, record.category, record.paymentMethod, record.location, record.amount.map(String.init(describing:)), record.quantity.map(String.init(describing:))].compactMap { $0 } + amountFields
+            let fields = [record.merchant, record.currency, record.category, record.paymentMethod, record.location, record.amount.map(String.init(describing:))].compactMap { $0 } + amountFields
             let haystack = ([record.content, record.rawInput] + record.tags + fields).joined(separator: " ")
             let comparableAmounts = record.amountItems.filter { query.currency == nil || $0.currency == query.currency }.map(\.value)
             return query.modules.contains(record.module)
