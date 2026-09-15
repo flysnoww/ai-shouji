@@ -181,4 +181,47 @@ final class CoreTests: XCTestCase {
         let core = QuickNoteCore(store: MemoryRecordStore([Record(ownerID: "owner", module: .ledger, rawInput: "旧记录", amount: 16, currency: "美元")]), identity: TestIdentity("owner"))
         XCTAssertEqual(try core.search(RecordQuery(currency: "USD")).count, 1)
     }
+
+    func testReminderMappingPersistsWithoutMakingLocalSaveDependOnSystemPermission() throws {
+        let core = QuickNoteCore(store: MemoryRecordStore(), identity: TestIdentity("owner")), due = Date(timeIntervalSince1970: 1_800_000_000)
+        let local = try core.save(Record(module: .todo, rawInput: "提醒吃饭", dueAt: due, reminderEnabled: true, status: .pending))
+        XCTAssertTrue(local.reminderEnabled); XCTAssertFalse(local.reminderLinked); XCTAssertNil(local.reminderExternalID)
+        var linked = local; linked.reminderLinked = true; linked.reminderExternalID = "mock-reminder-1"
+        let saved = try core.save(linked); XCTAssertTrue(saved.reminderLinked); XCTAssertEqual(saved.reminderExternalID, "mock-reminder-1")
+    }
+
+    func testExportZipManifestAndBackupRestoreAreValidatedBeforeReplacement() throws {
+        let user = IdentityUser(id: "owner", provider: .apple, providerSubject: "mock-apple-user-001", displayName: "Test User")
+        let records = [Record(ownerID: "owner", module: .ledger, rawInput: "Walmart 16 USD", amount: 16, currency: "USD"), Record(ownerID: "owner", module: .todo, rawInput: "Call John", dueAt: Date(), reminderEnabled: true, reminderLinked: true, reminderExternalID: "reminder-1")]
+        let exported = try ExportService.makeExport(records: records, users: [user], exportedAt: Date(timeIntervalSince1970: 0)), entries = try ZipArchive.entries(in: exported)
+        XCTAssertEqual(Set(entries.keys), ["manifest.json", "records.json", "users.json", "metadata.json", "attachments/"])
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601; let manifest = try decoder.decode(ExportManifest.self, from: XCTUnwrap(entries["manifest.json"])); XCTAssertEqual(manifest.recordCount, 2); XCTAssertEqual(manifest.userCount, 1); XCTAssertEqual(manifest.attachmentCount, 0)
+        let archiveText = String(decoding: exported, as: UTF8.self); XCTAssertFalse(archiveText.localizedCaseInsensitiveContains("oauth")); XCTAssertFalse(archiveText.localizedCaseInsensitiveContains("password")); XCTAssertFalse(archiveText.localizedCaseInsensitiveContains("token"))
+        let backup = try BackupService.makeBackup(records: records, users: [user], settings: ["theme": "lake-light"]), payload = try BackupService.validateAndRead(backup)
+        XCTAssertEqual(payload.records, records); XCTAssertEqual(payload.users, [user]); XCTAssertEqual(payload.settings["theme"], "lake-light")
+        let identity = TestIdentity("owner"), store = MemoryRecordStore([Record(ownerID: "owner", module: .memo, rawInput: "existing")]), core = QuickNoteCore(store: store, identity: identity), before = store.records
+        XCTAssertThrowsError(try BackupService.validateAndRead(Data("invalid".utf8))); XCTAssertEqual(store.records, before)
+        try core.replaceCurrentOwnerRecords(with: payload.records); XCTAssertEqual(try core.records().count, 2)
+    }
+
+    func testMinimalEnglishTodoSearchAndCanonicalCurrencyQueries() async throws {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(secondsFromGMT: 0)!; let now = Date(timeIntervalSince1970: 1_800_000_000), parser = DeterministicDraftParser(calendar: calendar, now: { now })
+        for input in ["Tomorrow 8 AM breakfast", "Call John at 3 PM tomorrow", "Buy milk Friday", "Dentist next Monday 10 AM", "Remind me in two hours to turn off the oven"] { guard case .create(let record) = try await parser.parse(input) else { return XCTFail(input) }; XCTAssertEqual(record.module, .todo, input); XCTAssertNotNil(record.dueAt, input) }
+        guard case .search(let walmart) = try await parser.parse("Find Walmart ledger records") else { return XCTFail() }; XCTAssertEqual(walmart.modules, [.ledger]); XCTAssertEqual(walmart.keyword, "Walmart")
+        guard case .search(let memos) = try await parser.parse("Find important memos") else { return XCTFail() }; XCTAssertEqual(memos.modules, [.memo]); XCTAssertTrue(memos.importantOnly)
+        guard case .search(let amount) = try await parser.parse("Find ledger records over 50 USD") else { return XCTFail() }; XCTAssertEqual(amount.minimumAmount, 50); XCTAssertEqual(amount.currency, "USD")
+        guard case .search(let ideas) = try await parser.parse("Find ideas about family mode") else { return XCTFail() }; XCTAssertEqual(ideas.modules, [.idea]); XCTAssertEqual(ideas.keyword, "family mode")
+        let core = QuickNoteCore(store: MemoryRecordStore([Record(ownerID: "owner", module: .ledger, rawInput: "old Chinese", amount: 16, currency: "美元"), Record(ownerID: "owner", module: .ledger, rawInput: "canonical", amount: 70, currency: "USD"), Record(ownerID: "owner", module: .ledger, rawInput: "euro", amount: 25, currency: "EUR")]), identity: TestIdentity("owner"))
+        func result(_ input: String) async throws -> ([UUID], [String: Decimal]) { guard case .search(let query) = try await parser.parse(input) else { throw ArchiveError.invalidArchive }; let records = try core.search(query); return (records.map(\.id), QuickNoteCore.numericTotals(in: records)) }
+        let usdChinese = try await result("搜索美元"), usdCode = try await result("Search USD"); XCTAssertEqual(usdChinese.0, usdCode.0); XCTAssertEqual(usdChinese.1, usdCode.1)
+        let euroChinese = try await result("搜索欧"), euroCode = try await result("Search EUR"); XCTAssertEqual(euroChinese.0, euroCode.0); XCTAssertEqual(euroChinese.1, euroCode.1)
+    }
+
+#if canImport(UIKit) && !canImport(QuickNoteCore)
+    @MainActor func testShareRendererProducesPNGAndPrivacyOptionsChangeOutput() throws {
+        let record = Record(module: .ledger, rawInput: "Walmart 16 USD", tags: ["shopping"], merchant: "Walmart", amount: 16, currency: "USD")
+        let full = try XCTUnwrap(ShareCardRenderer.png(records: [record], options: SharePrivacyOptions())), privateImage = try XCTUnwrap(ShareCardRenderer.png(records: [record], options: SharePrivacyOptions(showAmount: false, showDateTime: false, showTags: false, showMerchantOrLocation: false, showBranding: false)))
+        XCTAssertEqual(Array(full.prefix(8)), [137, 80, 78, 71, 13, 10, 26, 10]); XCTAssertNotEqual(full, privateImage)
+    }
+#endif
 }
