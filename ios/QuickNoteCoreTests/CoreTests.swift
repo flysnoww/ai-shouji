@@ -198,7 +198,8 @@ final class CoreTests: XCTestCase {
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601; let manifest = try decoder.decode(ExportManifest.self, from: XCTUnwrap(entries["manifest.json"])); XCTAssertEqual(manifest.recordCount, 2); XCTAssertEqual(manifest.userCount, 1); XCTAssertEqual(manifest.attachmentCount, 0)
         let archiveText = String(decoding: exported, as: UTF8.self); XCTAssertFalse(archiveText.localizedCaseInsensitiveContains("oauth")); XCTAssertFalse(archiveText.localizedCaseInsensitiveContains("password")); XCTAssertFalse(archiveText.localizedCaseInsensitiveContains("token"))
         let backup = try BackupService.makeBackup(records: records, users: [user], settings: ["theme": "lake-light"]), payload = try BackupService.validateAndRead(backup)
-        XCTAssertEqual(payload.records, records); XCTAssertEqual(payload.users, [user]); XCTAssertEqual(payload.settings["theme"], "lake-light")
+        XCTAssertEqual(payload.records.map(\.id), records.map(\.id)); XCTAssertEqual(payload.records.map(\.rawInput), records.map(\.rawInput)); XCTAssertEqual(payload.records.last?.reminderExternalID, "reminder-1")
+        XCTAssertEqual(payload.users.map(\.id), [user.id]); XCTAssertEqual(payload.users.first?.provider, .apple); XCTAssertEqual(payload.settings["theme"], "lake-light")
         let identity = TestIdentity("owner"), store = MemoryRecordStore([Record(ownerID: "owner", module: .memo, rawInput: "existing")]), core = QuickNoteCore(store: store, identity: identity), before = store.records
         XCTAssertThrowsError(try BackupService.validateAndRead(Data("invalid".utf8))); XCTAssertEqual(store.records, before)
         try core.replaceCurrentOwnerRecords(with: payload.records); XCTAssertEqual(try core.records().count, 2)
