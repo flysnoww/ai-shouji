@@ -62,7 +62,7 @@ enum ReminderServiceError: Error { case permissionDenied }
     func exportData() throws -> Data { try ExportService.makeExport(records: records, users: identity.currentUser.map { [$0] } ?? []) }
     func backupData() throws -> Data { try BackupService.makeBackup(records: records, users: identity.currentUser.map { [$0] } ?? [], settings: ["theme": "lake-light"]) }
     func restoreBackup(_ data: Data) throws { let payload = try BackupService.validateAndRead(data); try core.replaceCurrentOwnerRecords(with: payload.records); reload() }
-    private func linkReminder(_ saved: Record) async { do { var linked = saved; linked.reminderExternalID = try await reminderService.create(for: saved); linked.reminderLinked = true; _ = try core.save(linked); reload() } catch { error = "记录已保存，但未写入系统提醒事项。" } }
+    private func linkReminder(_ saved: Record) async { do { var linked = saved; linked.reminderExternalID = try await reminderService.create(for: saved); linked.reminderLinked = true; _ = try core.save(linked); reload() } catch { self.error = "记录已保存，但未写入系统提醒事项。" } }
 }
 
 @main struct AIQuickNoteApp: App { @StateObject private var model = AppModel(); var body: some Scene { WindowGroup { RootView().environmentObject(model) } } }
