@@ -162,7 +162,7 @@ public struct DeterministicDraftParser: DraftParser {
     private func query(_ text: String) -> RecordQuery {
         let text = text.replacingOccurrences(of: "代办", with: "待办")
         var named = Set(Module.allCases.filter { text.contains($0.title) })
-        let lower = text.lowercased(), aliases: [(Module, [String])] = [(.ledger, ["ledger", "expense", "expenses"]), (.todo, ["todo", "task", "tasks"]), (.memo, ["memo", "memos", "note", "notes"]), (.idea, ["idea", "ideas"])]
+        let lower = text.lowercased(), aliases: [(Module, [String])] = [(.ledger, ["ledger", "expense", "expenses"]), (.todo, ["todo", "todos", "task", "tasks"]), (.memo, ["memo", "memos", "note", "notes"]), (.idea, ["idea", "ideas"])]
         aliases.filter { pair in pair.1.contains { lower.range(of: "\\b\($0)\\b", options: .regularExpression) != nil } }.forEach { named.insert($0.0) }
         let range = dateRange(in: text), category = category(in: text)
         let strictMinimum = capturedNumber(in: text, pattern: #"(?:超过|大于|over|above|more\s+than)\s*(\d+(?:\.\d+)?)"#)
@@ -247,7 +247,7 @@ public struct DeterministicDraftParser: DraftParser {
     }
 
     private func hasMoney(in text: String) -> Bool { !amountItems(in: text).isEmpty || ["美元", "dollar", "USD", "日元", "yen", "JPY", "欧元", "euro", "EUR", "人民币", "RMB", "CNY", "$", "€", "花了", "支付", "付款", "一共"].contains { text.localizedCaseInsensitiveContains($0) } }
-    private func hasFutureTime(in text: String) -> Bool { text.range(of: #"今天晚些时候|今晚|明天|后天|每周[一二三四五六日天]|星期[一二三四五六日天]|周[一二三四五六日天]|下周|[\d零〇一二两三四五六七八九十百千万]+\s*(?:小时|分钟)后|(?:早上|上午|中午|下午|晚上)?\s*(?:\d{1,2}|[一二两三四五六七八九十]+)(?:点|:)|\b(?:today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|in\s+(?:\d+|one|two)\s+(?:hours?|minutes?))\b"#, options: [.regularExpression, .caseInsensitive]) != nil }
+    private func hasFutureTime(in text: String) -> Bool { text.range(of: #"今天晚些时候|今晚|明天|后天|每周[一二三四五六日天]|星期[一二三四五六日天]|周[一二三四五六日天]|下周|[\d零〇一二两三四五六七八九十百千万]+\s*(?:小时|分钟)后|(?:早上|上午|中午|下午|晚上)?\s*(?:\d{1,2}|[一二两三四五六七八九十]+)(?:点|:)|\b(?:today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|in\s+(?:\d+|one|two)\s+(?:hours?|minutes?)|at\s+\d{1,2}(?::\d{2})?\s*(?:AM|PM))\b"#, options: [.regularExpression, .caseInsensitive]) != nil }
     private func hasAction(in text: String) -> Bool { ["去", "买", "吃", "提交", "打电话", "充电", "看", "开会", "预约", "做", "拿", "送", "检查", "打扫", "提醒", "完成", "remind me", "call", "buy", "go", "send", "submit", "finish", "pick up", "appointment", "dentist"].contains { text.localizedCaseInsensitiveContains($0) } }
     private func category(in text: String) -> String? { [("停车", "停车"), ("加油", "加油"), ("午饭", "餐饮"), ("咖啡", "餐饮"), ("Starbucks", "餐饮"), ("买菜", "食品"), ("牛奶", "食品"), ("显示器", "电子产品"), ("充电器", "电子产品"), ("iPhone", "电子产品"), ("买书", "书籍"), ("医疗", "医疗"), ("看牙", "医疗"), ("购物", "购物"), ("买", "购物")].first(where: { text.localizedCaseInsensitiveContains($0.0) })?.1 }
     private func dateRange(in text: String) -> (Date, Date)? {
