@@ -231,11 +231,12 @@ final class CoreTests: XCTestCase {
     func testRCClockTimeReminderAndPaginationRegressions() async throws {
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         func due(_ hour: Int, _ input: String) async throws -> Date { let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 16, hour: hour))!, parser = DeterministicDraftParser(calendar: calendar, now: { now }); guard case .create(let record) = try await parser.parse(input) else { throw ArchiveError.invalidArchive }; return try XCTUnwrap(record.dueAt) }
-        XCTAssertEqual(calendar.component(.day, from: try await due(17, "Pick up package at 6 PM")), 16)
-        XCTAssertEqual(calendar.component(.day, from: try await due(20, "Pick up package at 6 PM")), 17)
-        XCTAssertEqual(calendar.component(.day, from: try await due(20, "Pick up package today at 6 PM")), 16)
-        XCTAssertEqual(calendar.component(.day, from: try await due(20, "Pick up package tomorrow at 6 PM")), 17)
-        XCTAssertEqual(calendar.component(.hour, from: try await due(20, "Dentist next Monday 10 AM")), 10)
+        let before = try await due(17, "Pick up package at 6 PM"), after = try await due(20, "Pick up package at 6 PM"), today = try await due(20, "Pick up package today at 6 PM"), tomorrow = try await due(20, "Pick up package tomorrow at 6 PM"), monday = try await due(20, "Dentist next Monday 10 AM")
+        XCTAssertEqual(calendar.component(.day, from: before), 16)
+        XCTAssertEqual(calendar.component(.day, from: after), 17)
+        XCTAssertEqual(calendar.component(.day, from: today), 16)
+        XCTAssertEqual(calendar.component(.day, from: tomorrow), 17)
+        XCTAssertEqual(calendar.component(.hour, from: monday), 10)
 
         let store = MemoryRecordStore(), core = QuickNoteCore(store: store, identity: TestIdentity("owner")), dueAt = Date(timeIntervalSince1970: 2_000_000_000)
         for module in Module.allCases { let saved = try core.save(Record(module: module, rawInput: "remind", dueAt: dueAt, reminderEnabled: true, reminderState: .requested)); XCTAssertTrue(saved.reminderEnabled, module.rawValue); XCTAssertEqual(saved.reminderState, .requested, module.rawValue); XCTAssertEqual(saved.dueAt, dueAt, module.rawValue) }
