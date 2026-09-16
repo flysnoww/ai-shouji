@@ -84,7 +84,7 @@ final class CoreTests: XCTestCase {
         var todo = try core.save(Record(module: .todo, rawInput: "原始待办", dueAt: Date(), reminderEnabled: true, status: .done))
         todo.module = .idea
         let idea = try core.save(todo)
-        XCTAssertNil(idea.dueAt); XCTAssertNil(idea.status); XCTAssertFalse(idea.reminderEnabled)
+        XCTAssertEqual(idea.dueAt, todo.dueAt); XCTAssertNil(idea.status); XCTAssertTrue(idea.reminderEnabled)
         XCTAssertEqual(idea.rawInput, "原始待办")
     }
 
