@@ -175,7 +175,7 @@ public struct DeterministicDraftParser: DraftParser {
         Module.allCases.forEach { keyword = keyword.replacingOccurrences(of: $0.title, with: "") }
         keyword = keyword.replacingOccurrences(of: #"\b(?:search|find|show|all|important|records?|about|ledger|expenses?|todos?|tasks?|memos?|notes?|ideas?|today|yesterday|this\s+week|this\s+month)\b"#, with: "", options: [.regularExpression, .caseInsensitive])
         keyword = keyword.replacingOccurrences(of: #"\b(?:over|above|more\s+than|under|below|less\s+than)\s*\d+(?:\.\d+)?\s*(?:USD|dollars?|\$|JPY|yen|EUR|euros?|CNY|RMB)?"#, with: "", options: [.regularExpression, .caseInsensitive])
-        keyword = keyword.replacingOccurrences(of: #"(?:美元|美金|USD|\$|dollars?|日元|JPY|yen|円|欧元|欧|EUR|euros?|€|人民币|CNY|RMB)"#, with: "", options: [.regularExpression, .caseInsensitive])
+        keyword = keyword.replacingOccurrences(of: #"(?:美元|美金|dollars?|USD|\$|日元|JPY|yen|円|欧元|euros?|EUR|欧|€|人民币|CNY|RMB)"#, with: "", options: [.regularExpression, .caseInsensitive])
         if let category { keyword = keyword.replacingOccurrences(of: category, with: "") }
         return RecordQuery(keyword: keyword.split(whereSeparator: { $0.isWhitespace }).joined(separator: " "), modules: named.isEmpty ? Set(Module.allCases) : named, importantOnly: text.contains("重要") || lower.contains("important"), dateStart: range?.0, dateEnd: range?.1, minimumAmount: strictMinimum ?? inclusiveMinimum, minimumInclusive: inclusiveMinimum != nil, maximumAmount: strictMaximum ?? inclusiveMaximum, maximumInclusive: inclusiveMaximum != nil, currency: currency(in: text), category: category)
     }
