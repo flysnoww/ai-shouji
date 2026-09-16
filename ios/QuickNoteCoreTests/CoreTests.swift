@@ -231,7 +231,7 @@ final class CoreTests: XCTestCase {
     func testCurrencySearchAliasesMatchCanonicalAndLegacyValues() async throws {
         let parser = DeterministicDraftParser(), records = [Record(ownerID: "owner", module: .ledger, rawInput: "usd", amount: 1, currency: "美元"), Record(ownerID: "owner", module: .ledger, rawInput: "jpy", amount: 2, currency: "日元"), Record(ownerID: "owner", module: .ledger, rawInput: "eur", amount: 3, currency: "欧元"), Record(ownerID: "owner", module: .ledger, rawInput: "cny", amount: 4, currency: "人民币")]
         func ids(_ input: String) async throws -> [UUID] { guard case .search(let query) = try await parser.parse(input) else { throw ArchiveError.invalidArchive }; return QuickNoteCore.search(query, in: records).map(\.id) }
-        for aliases in [["美元", "USD", "美金", "dollars"], ["日元", "JPY", "yen"], ["欧元", "EUR", "欧", "euros"], ["人民币", "CNY", "RMB"]] { let expected = try await ids("搜索 \(aliases[0])"); for alias in aliases.dropFirst() { XCTAssertEqual(try await ids("Search \(alias)"), expected, alias) } }
+        for aliases in [["美元", "USD", "美金", "dollars"], ["日元", "JPY", "yen"], ["欧元", "EUR", "欧", "euros"], ["人民币", "CNY", "RMB"]] { let expected = try await ids("搜索 \(aliases[0])"); for alias in aliases.dropFirst() { let actual = try await ids("Search \(alias)"); XCTAssertEqual(actual, expected, alias) } }
     }
 
 #if canImport(UIKit) && !canImport(QuickNoteCore)
