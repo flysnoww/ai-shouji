@@ -228,6 +228,25 @@ final class CoreTests: XCTestCase {
         var denied = Record(module: .todo, rawInput: "提醒", reminderEnabled: true, reminderState: .permissionDenied); denied.reminderLinked = false; XCTAssertEqual(denied.reminderState, .permissionDenied); XCTAssertFalse(denied.reminderLinked)
     }
 
+    func testRCClockTimeReminderAndPaginationRegressions() async throws {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func due(_ hour: Int, _ input: String) async throws -> Date { let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 16, hour: hour))!, parser = DeterministicDraftParser(calendar: calendar, now: { now }); guard case .create(let record) = try await parser.parse(input) else { throw ArchiveError.invalidArchive }; return try XCTUnwrap(record.dueAt) }
+        XCTAssertEqual(calendar.component(.day, from: try await due(17, "Pick up package at 6 PM")), 16)
+        XCTAssertEqual(calendar.component(.day, from: try await due(20, "Pick up package at 6 PM")), 17)
+        XCTAssertEqual(calendar.component(.day, from: try await due(20, "Pick up package today at 6 PM")), 16)
+        XCTAssertEqual(calendar.component(.day, from: try await due(20, "Pick up package tomorrow at 6 PM")), 17)
+        XCTAssertEqual(calendar.component(.hour, from: try await due(20, "Dentist next Monday 10 AM")), 10)
+
+        let store = MemoryRecordStore(), core = QuickNoteCore(store: store, identity: TestIdentity("owner")), dueAt = Date(timeIntervalSince1970: 2_000_000_000)
+        for module in Module.allCases { let saved = try core.save(Record(module: module, rawInput: "remind", dueAt: dueAt, reminderEnabled: true, reminderState: .requested)); XCTAssertTrue(saved.reminderEnabled, module.rawValue); XCTAssertEqual(saved.reminderState, .requested, module.rawValue); XCTAssertEqual(saved.dueAt, dueAt, module.rawValue) }
+        let denied = try core.save(Record(module: .memo, rawInput: "memo", reminderEnabled: true, reminderState: .permissionDenied)); XCTAssertEqual(denied.reminderState, .permissionDenied)
+        var missing = Record(module: .todo, rawInput: "todo", reminderEnabled: true, reminderState: .missingExternalReminder); missing.reminderLinked = false; XCTAssertEqual((try core.save(missing)).reminderState, .missingExternalReminder)
+
+        XCTAssertEqual(Pagination.clampedPage(1, itemCount: 25), 1)
+        XCTAssertEqual(Pagination.clampedPage(99, itemCount: 25), 2)
+        XCTAssertEqual(Pagination.clampedPage(-1, itemCount: 25), 0)
+    }
+
     func testCurrencySearchAliasesMatchCanonicalAndLegacyValues() async throws {
         let parser = DeterministicDraftParser(), records = [Record(ownerID: "owner", module: .ledger, rawInput: "usd", amount: 1, currency: "美元"), Record(ownerID: "owner", module: .ledger, rawInput: "jpy", amount: 2, currency: "日元"), Record(ownerID: "owner", module: .ledger, rawInput: "eur", amount: 3, currency: "欧元"), Record(ownerID: "owner", module: .ledger, rawInput: "cny", amount: 4, currency: "人民币")]
         func ids(_ input: String) async throws -> [UUID] { guard case .search(let query) = try await parser.parse(input) else { throw ArchiveError.invalidArchive }; return QuickNoteCore.search(query, in: records).map(\.id) }
@@ -249,7 +268,7 @@ final class CoreTests: XCTestCase {
         let suite = "skin-test-\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: suite)), folder = FileManager.default.temporaryDirectory.appendingPathComponent(suite); defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: folder) }
         let manager = SkinManager(defaults: defaults, folder: folder); try manager.importSkin(archive()); XCTAssertEqual(manager.current.id, "test-skin")
         let relaunched = SkinManager(defaults: defaults, folder: folder); XCTAssertEqual(relaunched.current.id, "test-skin"); relaunched.delete("test-skin"); XCTAssertEqual(relaunched.current.id, SkinDefinition.default.id)
-        defaults.set(DisplayLanguage.english.rawValue, forKey: "language.display"); defaults.set(SpeechInputLanguage.simplifiedChinese.rawValue, forKey: "language.speech"); XCTAssertEqual(defaults.string(forKey: "language.display"), "english"); XCTAssertEqual(defaults.string(forKey: "language.speech"), "simplifiedChinese")
+        defaults.set(DisplayLanguage.english.rawValue, forKey: "language.display"); defaults.set(SpeechInputLanguage.simplifiedChinese.rawValue, forKey: "language.speech"); XCTAssertEqual(defaults.string(forKey: "language.display"), "english"); XCTAssertEqual(defaults.string(forKey: "language.speech"), "simplifiedChinese"); XCTAssertEqual(DisplayLanguage.resolved("english").localeIdentifier, "en"); XCTAssertEqual(DisplayLanguage.resolved("simplifiedChinese").localeIdentifier, "zh-Hans"); XCTAssertEqual(DisplayLanguage.resolved("unknown"), .system); XCTAssertEqual(String(localized: "搜索", locale: Locale(identifier: "en")), "Search"); XCTAssertEqual(String(localized: "Search", locale: Locale(identifier: "zh-Hans")), "搜索")
     }
 #endif
 }

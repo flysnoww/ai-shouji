@@ -134,6 +134,7 @@ public struct RecordQuery: Sendable, Equatable {
 public enum Pagination {
     public static func page<T>(_ values: [T], index: Int, size: Int = 10) -> [T] { guard size > 0 else { return [] }; let start = max(0, min(index, max(0, (values.count - 1) / size))) * size; return Array(values.dropFirst(start).prefix(size)) }
     public static func pageCount(itemCount: Int, size: Int = 10) -> Int { max(1, Int(ceil(Double(itemCount) / Double(max(1, size))))) }
+    public static func clampedPage(_ index: Int, itemCount: Int, size: Int = 10) -> Int { min(max(0, index), pageCount(itemCount: itemCount, size: size) - 1) }
 }
 
 public protocol IdentityGate: Sendable { var confirmedUserID: String? { get } }
@@ -229,10 +230,12 @@ public struct DeterministicDraftParser: DraftParser {
         var value = dateRange(in: text)?.0
         if value == nil, let weekday = weekday(in: text) { let current = calendar.component(.weekday, from: now()); var delta = (weekday - current + 7) % 7; if text.contains("下周") { delta += 7 } else if text.localizedCaseInsensitiveContains("next "), delta == 0 { delta = 7 }; value = calendar.date(byAdding: .day, value: delta, to: calendar.startOfDay(for: now())) }
         if value == nil, let yearText = capture(in: text, pattern: #"([零〇一二两三四五六七八九]{4})年([零〇一二两三四五六七八九十]+)月([零〇一二两三四五六七八九十]+)[日号]"#, group: 0) { let parts = yearText.split(whereSeparator: { "年月日号".contains($0) }).map { chineseNumber(String($0)) }; if parts.count == 3 { value = calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2])) } }
+        let hasExplicitDate = dateRange(in: text) != nil || weekday(in: text) != nil
         if value == nil, text.range(of: #"(?:早上|上午|中午|下午|晚上)?\s*(?:\d{1,2}|[一二两三四五六七八九十]+)(?:点|:)|(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:AM|PM)"#, options: [.regularExpression, .caseInsensitive]) != nil { value = calendar.startOfDay(for: now()) }
         guard var value else { return nil }
         if let hourText = capture(in: text, pattern: #"(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(AM|PM)"#), let hour = Int(hourText) { let minute = Int(capture(in: text, pattern: #"(?:at\s+)?\d{1,2}:(\d{2})\s*(?:AM|PM)"#) ?? "0") ?? 0, marker = capture(in: text, pattern: #"(?:at\s+)?\d{1,2}(?::\d{2})?\s*(AM|PM)"#)?.uppercased(); let adjusted = marker == "PM" && hour < 12 ? hour + 12 : marker == "AM" && hour == 12 ? 0 : hour; value = calendar.date(bySettingHour: adjusted, minute: minute, second: 0, of: value) ?? value }
         if let expression = capture(in: text, pattern: #"((?:早上|上午|中午|下午|晚上|今晚)?\s*(?:\d{1,2}|[一二两三四五六七八九十]+)(?:点|:)\s*(?:半|\d{1,2})?)"#) { let digits = expression.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }; var hourText = expression; ["早上", "上午", "中午", "下午", "晚上", "今晚"].forEach { hourText = hourText.replacingOccurrences(of: $0, with: "") }; hourText = String(hourText.prefix { $0 != "点" && $0 != ":" }).trimmingCharacters(in: .whitespaces); let chineseHour = digits.first ?? chineseNumber(hourText); var hour = chineseHour; if (expression.contains("下午") || expression.contains("晚上") || expression.contains("今晚")) && hour < 12 { hour += 12 }; let minute = expression.contains("半") ? 30 : digits.dropFirst().first ?? 0; value = calendar.date(bySettingHour: hour, minute: minute, second: 0, of: value) ?? value }
+        if !hasExplicitDate, value <= now() { return calendar.date(byAdding: .day, value: 1, to: value) }
         return value
     }
 
@@ -328,19 +331,19 @@ public final class QuickNoteCore: @unchecked Sendable {
             if value.amountItems.isEmpty, let amount = value.amount { value.amountItems = [AmountItem(value: amount, currency: value.currency)] }
             if value.amountItems.count == 1 { value.amount = value.amountItems[0].value; value.currency = value.amountItems[0].currency }
             if value.amountItems.count > 1 { value.amount = nil; value.currency = nil }
-            value.dueAt = nil; value.reminderEnabled = false; value.reminderLinked = false; value.reminderExternalID = nil; value.reminderState = .none; value.status = nil
+            if !value.reminderEnabled { value.dueAt = nil }; value.status = nil
         case .todo:
             value.merchant = nil; value.amount = nil; value.currency = nil; value.amountItems = []; value.category = nil
             value.paymentMethod = nil; value.occurredAt = nil; value.status = value.status ?? .pending
             if !value.reminderEnabled { value.reminderLinked = false; value.reminderExternalID = nil; value.reminderState = .none }
         case .memo:
             value.merchant = nil; value.amount = nil; value.currency = nil; value.amountItems = []; value.category = nil
-            value.paymentMethod = nil; value.occurredAt = nil; value.dueAt = nil; value.reminderLinked = false; value.reminderExternalID = nil; value.reminderState = .none; value.location = nil; value.status = nil
+            value.paymentMethod = nil; value.occurredAt = nil; if !value.reminderEnabled { value.dueAt = nil }; value.location = nil; value.status = nil
         case .idea:
             value.merchant = nil; value.amount = nil; value.currency = nil; value.amountItems = []; value.category = nil
-            value.paymentMethod = nil; value.occurredAt = nil; value.dueAt = nil
-            value.reminderEnabled = false; value.reminderLinked = false; value.reminderExternalID = nil; value.reminderState = .none; value.location = nil; value.status = nil
+            value.paymentMethod = nil; value.occurredAt = nil; if !value.reminderEnabled { value.dueAt = nil }; value.location = nil; value.status = nil
         }
+        if !value.reminderEnabled { value.reminderLinked = false; value.reminderExternalID = nil; value.reminderState = .none }
         return value
     }
 
