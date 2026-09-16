@@ -1,4 +1,5 @@
 import Foundation
+import Compression
 
 public enum Module: String, Codable, CaseIterable, Identifiable, Sendable {
     case ledger, todo, memo, idea
@@ -68,6 +69,8 @@ public struct AmountItem: Codable, Hashable, Sendable {
     public init(from decoder: Decoder) throws { let box = try decoder.container(keyedBy: CodingKeys.self); value = try box.decode(Decimal.self, forKey: .value); currency = CurrencyCanonicalizer.canonical(try box.decodeIfPresent(String.self, forKey: .currency)) }
 }
 
+public enum ReminderState: String, Codable, Sendable { case none, requested, active, permissionDenied, missingExternalReminder }
+
 public struct Record: Identifiable, Codable, Hashable, Sendable {
     public var id: UUID
     public var ownerID: String
@@ -89,6 +92,7 @@ public struct Record: Identifiable, Codable, Hashable, Sendable {
     public var reminderEnabled: Bool
     public var reminderLinked: Bool
     public var reminderExternalID: String?
+    public var reminderState: ReminderState
     public var location: String?
     public var status: TodoStatus?
 
@@ -96,17 +100,17 @@ public struct Record: Identifiable, Codable, Hashable, Sendable {
                 important: Bool = false, tags: [String] = [], createdAt: Date = Date(), updatedAt: Date = Date(),
                 merchant: String? = nil, amount: Decimal? = nil, currency: String? = nil, amountItems: [AmountItem] = [], category: String? = nil,
                 paymentMethod: String? = nil, occurredAt: Date? = nil, dueAt: Date? = nil,
-                reminderEnabled: Bool = false, reminderLinked: Bool = false, reminderExternalID: String? = nil, location: String? = nil, status: TodoStatus? = nil) {
+                reminderEnabled: Bool = false, reminderLinked: Bool = false, reminderExternalID: String? = nil, reminderState: ReminderState? = nil, location: String? = nil, status: TodoStatus? = nil) {
         self.id = id; self.ownerID = ownerID; self.module = module; self.rawInput = rawInput
         self.content = content ?? rawInput; self.important = important; self.tags = tags
         self.createdAt = createdAt; self.updatedAt = updatedAt; self.merchant = merchant; self.amount = amount
         self.currency = CurrencyCanonicalizer.canonical(currency); self.amountItems = amountItems.isEmpty ? amount.map { [AmountItem(value: $0, currency: currency)] } ?? [] : amountItems.map { AmountItem(value: $0.value, currency: $0.currency) }; self.category = category; self.paymentMethod = paymentMethod
-        self.occurredAt = occurredAt; self.dueAt = dueAt; self.reminderEnabled = reminderEnabled; self.reminderLinked = reminderLinked; self.reminderExternalID = reminderExternalID
+        self.occurredAt = occurredAt; self.dueAt = dueAt; self.reminderEnabled = reminderEnabled; self.reminderLinked = reminderLinked; self.reminderExternalID = reminderExternalID; self.reminderState = reminderState ?? (reminderLinked ? .active : reminderEnabled ? .requested : .none)
         self.location = location; self.status = status
     }
 
-    private enum CodingKeys: String, CodingKey { case id, ownerID, module, rawInput, content, important, tags, createdAt, updatedAt, merchant, amount, currency, amountItems, category, paymentMethod, occurredAt, dueAt, reminderEnabled, reminderLinked, reminderExternalID, location, status }
-    public init(from decoder: Decoder) throws { let box = try decoder.container(keyedBy: CodingKeys.self); let legacyAmount = try box.decodeIfPresent(Decimal.self, forKey: .amount), legacyCurrency = CurrencyCanonicalizer.canonical(try box.decodeIfPresent(String.self, forKey: .currency)); id = try box.decode(UUID.self, forKey: .id); ownerID = try box.decode(String.self, forKey: .ownerID); module = try box.decode(Module.self, forKey: .module); rawInput = try box.decode(String.self, forKey: .rawInput); content = try box.decode(String.self, forKey: .content); important = try box.decode(Bool.self, forKey: .important); tags = try box.decode([String].self, forKey: .tags); createdAt = try box.decode(Date.self, forKey: .createdAt); updatedAt = try box.decode(Date.self, forKey: .updatedAt); merchant = try box.decodeIfPresent(String.self, forKey: .merchant); amount = legacyAmount; currency = legacyCurrency; amountItems = try box.decodeIfPresent([AmountItem].self, forKey: .amountItems) ?? legacyAmount.map { [AmountItem(value: $0, currency: legacyCurrency)] } ?? []; category = try box.decodeIfPresent(String.self, forKey: .category); paymentMethod = try box.decodeIfPresent(String.self, forKey: .paymentMethod); occurredAt = try box.decodeIfPresent(Date.self, forKey: .occurredAt); dueAt = try box.decodeIfPresent(Date.self, forKey: .dueAt); reminderEnabled = try box.decode(Bool.self, forKey: .reminderEnabled); reminderLinked = try box.decodeIfPresent(Bool.self, forKey: .reminderLinked) ?? false; reminderExternalID = try box.decodeIfPresent(String.self, forKey: .reminderExternalID); location = try box.decodeIfPresent(String.self, forKey: .location); status = try box.decodeIfPresent(TodoStatus.self, forKey: .status) }
+    private enum CodingKeys: String, CodingKey { case id, ownerID, module, rawInput, content, important, tags, createdAt, updatedAt, merchant, amount, currency, amountItems, category, paymentMethod, occurredAt, dueAt, reminderEnabled, reminderLinked, reminderExternalID, reminderState, location, status }
+    public init(from decoder: Decoder) throws { let box = try decoder.container(keyedBy: CodingKeys.self); let legacyAmount = try box.decodeIfPresent(Decimal.self, forKey: .amount), legacyCurrency = CurrencyCanonicalizer.canonical(try box.decodeIfPresent(String.self, forKey: .currency)); id = try box.decode(UUID.self, forKey: .id); ownerID = try box.decode(String.self, forKey: .ownerID); module = try box.decode(Module.self, forKey: .module); rawInput = try box.decode(String.self, forKey: .rawInput); content = try box.decode(String.self, forKey: .content); important = try box.decode(Bool.self, forKey: .important); tags = try box.decode([String].self, forKey: .tags); createdAt = try box.decode(Date.self, forKey: .createdAt); updatedAt = try box.decode(Date.self, forKey: .updatedAt); merchant = try box.decodeIfPresent(String.self, forKey: .merchant); amount = legacyAmount; currency = legacyCurrency; amountItems = try box.decodeIfPresent([AmountItem].self, forKey: .amountItems) ?? legacyAmount.map { [AmountItem(value: $0, currency: legacyCurrency)] } ?? []; category = try box.decodeIfPresent(String.self, forKey: .category); paymentMethod = try box.decodeIfPresent(String.self, forKey: .paymentMethod); occurredAt = try box.decodeIfPresent(Date.self, forKey: .occurredAt); dueAt = try box.decodeIfPresent(Date.self, forKey: .dueAt); reminderEnabled = try box.decode(Bool.self, forKey: .reminderEnabled); reminderLinked = try box.decodeIfPresent(Bool.self, forKey: .reminderLinked) ?? false; reminderExternalID = try box.decodeIfPresent(String.self, forKey: .reminderExternalID); reminderState = try box.decodeIfPresent(ReminderState.self, forKey: .reminderState) ?? (reminderLinked ? .active : reminderEnabled ? .requested : .none); location = try box.decodeIfPresent(String.self, forKey: .location); status = try box.decodeIfPresent(TodoStatus.self, forKey: .status) }
 }
 
 public struct RecordQuery: Sendable, Equatable {
@@ -125,6 +129,11 @@ public struct RecordQuery: Sendable, Equatable {
     public init(keyword: String = "", modules: Set<Module> = Set(Module.allCases), importantOnly: Bool = false, tags: [String] = [], dateStart: Date? = nil, dateEnd: Date? = nil, minimumAmount: Decimal? = nil, minimumInclusive: Bool = false, maximumAmount: Decimal? = nil, maximumInclusive: Bool = false, currency: String? = nil, category: String? = nil) {
         self.keyword = keyword; self.modules = modules; self.importantOnly = importantOnly; self.tags = tags; self.dateStart = dateStart; self.dateEnd = dateEnd; self.minimumAmount = minimumAmount; self.minimumInclusive = minimumInclusive; self.maximumAmount = maximumAmount; self.maximumInclusive = maximumInclusive; self.currency = currency; self.category = category
     }
+}
+
+public enum Pagination {
+    public static func page<T>(_ values: [T], index: Int, size: Int = 10) -> [T] { guard size > 0 else { return [] }; let start = max(0, min(index, max(0, (values.count - 1) / size))) * size; return Array(values.dropFirst(start).prefix(size)) }
+    public static func pageCount(itemCount: Int, size: Int = 10) -> Int { max(1, Int(ceil(Double(itemCount) / Double(max(1, size))))) }
 }
 
 public protocol IdentityGate: Sendable { var confirmedUserID: String? { get } }
@@ -218,7 +227,7 @@ public struct DeterministicDraftParser: DraftParser {
         if let minutes = capturedCount(in: text, pattern: #"([\d零〇一二两三四五六七八九十百千万]+)\s*分钟后"#) { return calendar.date(byAdding: .minute, value: minutes, to: now()) }
         if let count = capture(in: text, pattern: #"\bin\s+(\d+|one|two)\s+(hours?|minutes?)\b"#), let unit = capture(in: text, pattern: #"\bin\s+(?:\d+|one|two)\s+(hours?|minutes?)\b"#) { let value = Int(count) ?? (count.lowercased() == "two" ? 2 : 1); return calendar.date(byAdding: unit.lowercased().hasPrefix("hour") ? .hour : .minute, value: value, to: now()) }
         var value = dateRange(in: text)?.0
-        if value == nil, let weekday = weekday(in: text) { let current = calendar.component(.weekday, from: now()); var delta = (weekday - current + 7) % 7; if text.contains("下周") || text.localizedCaseInsensitiveContains("next ") { delta += 7 }; value = calendar.date(byAdding: .day, value: delta, to: calendar.startOfDay(for: now())) }
+        if value == nil, let weekday = weekday(in: text) { let current = calendar.component(.weekday, from: now()); var delta = (weekday - current + 7) % 7; if text.contains("下周") { delta += 7 } else if text.localizedCaseInsensitiveContains("next "), delta == 0 { delta = 7 }; value = calendar.date(byAdding: .day, value: delta, to: calendar.startOfDay(for: now())) }
         if value == nil, let yearText = capture(in: text, pattern: #"([零〇一二两三四五六七八九]{4})年([零〇一二两三四五六七八九十]+)月([零〇一二两三四五六七八九十]+)[日号]"#, group: 0) { let parts = yearText.split(whereSeparator: { "年月日号".contains($0) }).map { chineseNumber(String($0)) }; if parts.count == 3 { value = calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2])) } }
         if value == nil, text.range(of: #"(?:早上|上午|中午|下午|晚上)?\s*(?:\d{1,2}|[一二两三四五六七八九十]+)(?:点|:)|(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:AM|PM)"#, options: [.regularExpression, .caseInsensitive]) != nil { value = calendar.startOfDay(for: now()) }
         guard var value else { return nil }
@@ -243,7 +252,7 @@ public struct DeterministicDraftParser: DraftParser {
     private func category(in text: String) -> String? { [("停车", "停车"), ("加油", "加油"), ("午饭", "餐饮"), ("咖啡", "餐饮"), ("Starbucks", "餐饮"), ("买菜", "食品"), ("牛奶", "食品"), ("显示器", "电子产品"), ("充电器", "电子产品"), ("iPhone", "电子产品"), ("买书", "书籍"), ("医疗", "医疗"), ("看牙", "医疗"), ("购物", "购物"), ("买", "购物")].first(where: { text.localizedCaseInsensitiveContains($0.0) })?.1 }
     private func dateRange(in text: String) -> (Date, Date)? {
         let lower = text.lowercased(), weekday = weekday(in: text), start: Date?
-        if let target = weekday { let current = calendar.component(.weekday, from: now()); var delta = (target - current + 7) % 7; if text.contains("下周") || lower.contains("next ") { delta += 7 }; start = calendar.date(byAdding: .day, value: delta, to: calendar.startOfDay(for: now())) }
+        if let target = weekday { let current = calendar.component(.weekday, from: now()); var delta = (target - current + 7) % 7; if text.contains("下周") { delta += 7 } else if lower.contains("next "), delta == 0 { delta = 7 }; start = calendar.date(byAdding: .day, value: delta, to: calendar.startOfDay(for: now())) }
         else if text.contains("下周") { start = calendar.date(byAdding: .weekOfYear, value: 1, to: calendar.dateInterval(of: .weekOfYear, for: now())!.start) }
         else if text.contains("本周") || lower.contains("this week") { start = calendar.dateInterval(of: .weekOfYear, for: now())?.start }
         else if text.contains("昨天") || lower.contains("yesterday") { start = calendar.date(byAdding: .day, value: -1, to: calendar.startOfDay(for: now())) }
@@ -319,18 +328,18 @@ public final class QuickNoteCore: @unchecked Sendable {
             if value.amountItems.isEmpty, let amount = value.amount { value.amountItems = [AmountItem(value: amount, currency: value.currency)] }
             if value.amountItems.count == 1 { value.amount = value.amountItems[0].value; value.currency = value.amountItems[0].currency }
             if value.amountItems.count > 1 { value.amount = nil; value.currency = nil }
-            value.dueAt = nil; value.reminderEnabled = false; value.reminderLinked = false; value.reminderExternalID = nil; value.status = nil
+            value.dueAt = nil; value.reminderEnabled = false; value.reminderLinked = false; value.reminderExternalID = nil; value.reminderState = .none; value.status = nil
         case .todo:
             value.merchant = nil; value.amount = nil; value.currency = nil; value.amountItems = []; value.category = nil
             value.paymentMethod = nil; value.occurredAt = nil; value.status = value.status ?? .pending
-            if !value.reminderEnabled { value.reminderLinked = false; value.reminderExternalID = nil }
+            if !value.reminderEnabled { value.reminderLinked = false; value.reminderExternalID = nil; value.reminderState = .none }
         case .memo:
             value.merchant = nil; value.amount = nil; value.currency = nil; value.amountItems = []; value.category = nil
-            value.paymentMethod = nil; value.occurredAt = nil; value.dueAt = nil; value.reminderLinked = false; value.reminderExternalID = nil; value.location = nil; value.status = nil
+            value.paymentMethod = nil; value.occurredAt = nil; value.dueAt = nil; value.reminderLinked = false; value.reminderExternalID = nil; value.reminderState = .none; value.location = nil; value.status = nil
         case .idea:
             value.merchant = nil; value.amount = nil; value.currency = nil; value.amountItems = []; value.category = nil
             value.paymentMethod = nil; value.occurredAt = nil; value.dueAt = nil
-            value.reminderEnabled = false; value.reminderLinked = false; value.reminderExternalID = nil; value.location = nil; value.status = nil
+            value.reminderEnabled = false; value.reminderLinked = false; value.reminderExternalID = nil; value.reminderState = .none; value.location = nil; value.status = nil
         }
         return value
     }
@@ -411,20 +420,21 @@ public enum ZipArchive {
         let centralOffset = UInt32(archive.count); archive.append(central); archive.appendLE(UInt32(0x06054b50)); archive.appendLE(UInt16(0)); archive.appendLE(UInt16(0)); archive.appendLE(UInt16(entries.count)); archive.appendLE(UInt16(entries.count)); archive.appendLE(UInt32(central.count)); archive.appendLE(centralOffset); archive.appendLE(UInt16(0)); return archive
     }
 
-    public static func entries(in archive: Data) throws -> [String: Data] {
+    public static func entries(in archive: Data, requiredEntry: String? = "manifest.json") throws -> [String: Data] {
         var result: [String: Data] = [:], offset = 0
         while offset + 4 <= archive.count, archive.uint32(at: offset) == 0x04034b50 {
-            guard offset + 30 <= archive.count, archive.uint16(at: offset + 8) == 0 else { throw ArchiveError.invalidArchive }
-            let crc = archive.uint32(at: offset + 14), size = Int(archive.uint32(at: offset + 18)), nameLength = Int(archive.uint16(at: offset + 26)), extraLength = Int(archive.uint16(at: offset + 28)), nameStart = offset + 30, dataStart = nameStart + nameLength + extraLength, end = dataStart + size
+            guard offset + 30 <= archive.count else { throw ArchiveError.invalidArchive }
+            let method = archive.uint16(at: offset + 8), crc = archive.uint32(at: offset + 14), compressedSize = Int(archive.uint32(at: offset + 18)), uncompressedSize = Int(archive.uint32(at: offset + 22)), nameLength = Int(archive.uint16(at: offset + 26)), extraLength = Int(archive.uint16(at: offset + 28)), nameStart = offset + 30, dataStart = nameStart + nameLength + extraLength, end = dataStart + compressedSize
             guard end <= archive.count, let name = String(data: archive[nameStart..<(nameStart + nameLength)], encoding: .utf8) else { throw ArchiveError.invalidArchive }
-            let body = Data(archive[dataStart..<end]); guard crc32(body) == crc else { throw ArchiveError.invalidArchive }
+            let compressed = Data(archive[dataStart..<end]), body: Data; if method == 0 { body = compressed } else if method == 8 { body = try inflate(compressed, expectedSize: uncompressedSize) } else { throw ArchiveError.invalidArchive }; guard body.count == uncompressedSize, crc32(body) == crc else { throw ArchiveError.invalidArchive }
             result[name] = body; offset = end
         }
-        guard result["manifest.json"] != nil else { throw ArchiveError.invalidArchive }
+        if let requiredEntry, result[requiredEntry] == nil { throw ArchiveError.invalidArchive }
         return result
     }
 
     private static func crc32(_ data: Data) -> UInt32 { data.reduce(UInt32.max) { value, byte in var crc = value ^ UInt32(byte); for _ in 0..<8 { crc = (crc >> 1) ^ (crc & 1 == 1 ? 0xEDB88320 : 0) }; return crc } ^ UInt32.max }
+    private static func inflate(_ data: Data, expectedSize: Int) throws -> Data { guard expectedSize >= 0, expectedSize <= 50_000_000 else { throw ArchiveError.invalidArchive }; var output = Data(count: expectedSize); let decoded = output.withUnsafeMutableBytes { destination in data.withUnsafeBytes { source in compression_decode_buffer(destination.bindMemory(to: UInt8.self).baseAddress!, expectedSize, source.bindMemory(to: UInt8.self).baseAddress!, data.count, nil, COMPRESSION_ZLIB) } }; guard decoded == expectedSize else { throw ArchiveError.invalidArchive }; return output }
 }
 
 public enum ExportService {

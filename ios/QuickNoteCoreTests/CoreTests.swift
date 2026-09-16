@@ -218,11 +218,38 @@ final class CoreTests: XCTestCase {
         let euroChinese = try await result("搜索欧"), euroCode = try await result("Search EUR"); XCTAssertEqual(euroChinese.0, euroCode.0); XCTAssertEqual(euroChinese.1, euroCode.1)
     }
 
+    func testFeatureFreezeEnglishDatesStructuredSearchPaginationAndReminderState() async throws {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(secondsFromGMT: 0)!; let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 15, hour: 10))!, parser = DeterministicDraftParser(calendar: calendar, now: { now })
+        guard case .create(let dentist) = try await parser.parse("Dentist next Monday 10 AM") else { return XCTFail() }; XCTAssertEqual(dentist.module, .todo); let dentistDate = calendar.dateComponents([.year, .month, .day, .hour], from: try XCTUnwrap(dentist.dueAt)); XCTAssertEqual(dentistDate.year, 2026); XCTAssertEqual(dentistDate.month, 9); XCTAssertEqual(dentistDate.day, 21); XCTAssertEqual(dentistDate.hour, 10)
+        guard case .create(let pickup) = try await parser.parse("Pick up package at 6 PM") else { return XCTFail() }; XCTAssertEqual(pickup.module, .todo); XCTAssertEqual(calendar.component(.hour, from: try XCTUnwrap(pickup.dueAt)), 18)
+        guard case .search(let today) = try await parser.parse("Show todos today") else { return XCTFail() }; XCTAssertEqual(today.modules, [.todo]); XCTAssertNotNil(today.dateStart); XCTAssertEqual(today.keyword, "")
+        guard case .search(let monthly) = try await parser.parse("Find expenses this month over 100 dollars") else { return XCTFail() }; XCTAssertEqual(monthly.modules, [.ledger]); XCTAssertEqual(monthly.minimumAmount, 100); XCTAssertEqual(monthly.currency, "USD"); XCTAssertNotNil(monthly.dateStart); XCTAssertEqual(monthly.keyword, "")
+        let values = Array(0..<37); XCTAssertEqual(Pagination.pageCount(itemCount: values.count), 4); XCTAssertEqual(Pagination.page(values, index: 0), Array(0..<10)); XCTAssertEqual(Pagination.page(values, index: 3), Array(30..<37))
+        var denied = Record(module: .todo, rawInput: "提醒", reminderEnabled: true, reminderState: .permissionDenied); denied.reminderLinked = false; XCTAssertEqual(denied.reminderState, .permissionDenied); XCTAssertFalse(denied.reminderLinked)
+    }
+
+    func testCurrencySearchAliasesMatchCanonicalAndLegacyValues() async throws {
+        let parser = DeterministicDraftParser(), records = [Record(ownerID: "owner", module: .ledger, rawInput: "usd", amount: 1, currency: "美元"), Record(ownerID: "owner", module: .ledger, rawInput: "jpy", amount: 2, currency: "日元"), Record(ownerID: "owner", module: .ledger, rawInput: "eur", amount: 3, currency: "欧元"), Record(ownerID: "owner", module: .ledger, rawInput: "cny", amount: 4, currency: "人民币")]
+        func ids(_ input: String) async throws -> [UUID] { guard case .search(let query) = try await parser.parse(input) else { throw ArchiveError.invalidArchive }; return QuickNoteCore.search(query, in: records).map(\.id) }
+        for aliases in [["美元", "USD", "美金", "dollars"], ["日元", "JPY", "yen"], ["欧元", "EUR", "欧", "euros"], ["人民币", "CNY", "RMB"]] { let expected = try await ids("搜索 \(aliases[0])"); for alias in aliases.dropFirst() { XCTAssertEqual(try await ids("Search \(alias)"), expected, alias) } }
+    }
+
 #if canImport(UIKit) && !canImport(QuickNoteCore)
     @MainActor func testShareRendererProducesPNGAndPrivacyOptionsChangeOutput() throws {
         let record = Record(module: .ledger, rawInput: "Walmart 16 USD", tags: ["shopping"], merchant: "Walmart", amount: 16, currency: "USD")
-        let full = try XCTUnwrap(ShareCardRenderer.png(records: [record], options: SharePrivacyOptions())), privateImage = try XCTUnwrap(ShareCardRenderer.png(records: [record], options: SharePrivacyOptions(showAmount: false, showDateTime: false, showTags: false, showMerchantOrLocation: false, showBranding: false)))
+        let full = try XCTUnwrap(ShareCardRenderer.png(records: [record], options: SharePrivacyOptions())), privateImage = try XCTUnwrap(ShareCardRenderer.png(records: [record], options: SharePrivacyOptions(showAmount: false, showDateTime: false, showTags: false, showMerchantOrLocation: false)))
         XCTAssertEqual(Array(full.prefix(8)), [137, 80, 78, 71, 13, 10, 26, 10]); XCTAssertNotEqual(full, privateImage)
+        XCTAssertNil(ShareCardRenderer.png(records: [], options: .init())); XCTAssertFalse(SharePresentation.text(for: record, showAmount: false).contains("16"))
+    }
+
+    @MainActor func testSkinValidationFallbackPersistenceAndLanguagePersistence() throws {
+        let png = UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2)).pngData { context in UIColor.white.setFill(); context.fill(CGRect(x: 0, y: 0, width: 2, height: 2)) }
+        func archive(schema: Int = 1, assetPath: String = "assets/background.png", includeAsset: Bool = true) throws -> Data { let skin = SkinDefinition(schemaVersion: schema, id: "test-skin", name: "Test", author: nil, colors: ["primary": "#112233"], assets: ["pageBackgroundImage": assetPath], effects: .init(globalEffectEnabled: false, globalEffectType: "none")), json = try JSONEncoder().encode(skin); var entries = [("skin.json", json)]; if includeAsset { entries.append((assetPath, png)) }; return ZipArchive.make(entries) }
+        XCTAssertThrowsError(try SkinManager.validate(Data("bad".utf8))); XCTAssertThrowsError(try SkinManager.validate(archive(schema: 2))); XCTAssertThrowsError(try SkinManager.validate(archive(includeAsset: false))); XCTAssertThrowsError(try SkinManager.validate(archive(assetPath: "../escape.png")))
+        let suite = "skin-test-\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: suite)), folder = FileManager.default.temporaryDirectory.appendingPathComponent(suite); defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: folder) }
+        let manager = SkinManager(defaults: defaults, folder: folder); try manager.importSkin(archive()); XCTAssertEqual(manager.current.id, "test-skin")
+        let relaunched = SkinManager(defaults: defaults, folder: folder); XCTAssertEqual(relaunched.current.id, "test-skin"); relaunched.delete("test-skin"); XCTAssertEqual(relaunched.current.id, SkinDefinition.default.id)
+        defaults.set(DisplayLanguage.english.rawValue, forKey: "language.display"); defaults.set(SpeechInputLanguage.simplifiedChinese.rawValue, forKey: "language.speech"); XCTAssertEqual(defaults.string(forKey: "language.display"), "english"); XCTAssertEqual(defaults.string(forKey: "language.speech"), "simplifiedChinese")
     }
 #endif
 }
