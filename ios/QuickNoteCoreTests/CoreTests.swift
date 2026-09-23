@@ -254,6 +254,82 @@ final class CoreTests: XCTestCase {
         for aliases in [["美元", "USD", "美金", "dollars"], ["日元", "JPY", "yen"], ["欧元", "EUR", "欧", "euros"], ["人民币", "CNY", "RMB"]] { let expected = try await ids("搜索 \(aliases[0])"); for alias in aliases.dropFirst() { let actual = try await ids("Search \(alias)"); XCTAssertEqual(actual, expected, alias) } }
     }
 
+    func testMixedCurrencyAliasesFilterCanonicalItems() async throws {
+        let parser = DeterministicDraftParser()
+        guard case .create(let usd) = try await parser.parse("60美元 70usd"), case .create(let english) = try await parser.parse("60 dollars + 70 USD"), case .create(let mixed) = try await parser.parse("Paid $50 and €30") else { return XCTFail() }
+        XCTAssertEqual(QuickNoteCore.numericTotals(in: [usd]), ["USD": 130])
+        XCTAssertEqual(QuickNoteCore.numericTotals(in: [english]), ["USD": 130])
+        XCTAssertEqual(QuickNoteCore.numericTotals(in: [mixed]), ["USD": 50, "EUR": 30])
+        for alias in ["美元", "美金", "USD", "usd", "US dollars", "$", "bucks"] {
+            let query = RecordQuery(keyword: alias)
+            XCTAssertEqual(QuickNoteCore.search(query, in: [usd]).map(\.id), [usd.id], alias)
+            XCTAssertEqual(QuickNoteCore.numericTotals(in: [usd], currency: query.effectiveCurrency), ["USD": 130], alias)
+        }
+        XCTAssertEqual(QuickNoteCore.numericTotals(in: QuickNoteCore.search(RecordQuery(keyword: "USD"), in: [mixed]), currency: "USD"), ["USD": 50])
+        XCTAssertEqual(QuickNoteCore.numericTotals(in: QuickNoteCore.search(RecordQuery(keyword: "EUR"), in: [mixed]), currency: "EUR"), ["EUR": 30])
+        for aliases in [["欧元", "EUR", "euros"], ["日元", "JPY", "yen"], ["人民币", "CNY", "RMB", "yuan"], ["英镑", "GBP", "pounds"]] { XCTAssertEqual(Set(aliases.compactMap(CurrencyCanonicalizer.recognized)).count, 1) }
+    }
+
+    func testEnglishV1Benchmark100Utterances() async throws {
+        let parser = DeterministicDraftParser()
+        let ledger = [
+            "Paid $16 at Walmart", "Spent 30 dollars on lunch", "Coffee cost 5 bucks", "Groceries were USD 42",
+            "Bought a book for 12 euros", "Paid €18 for dinner", "Train ticket cost 500 yen", "Spent JPY 1200 on food",
+            "Gas was 40 US dollars", "Parking cost 8 dollars", "Paid 24 pounds for shoes", "Spent GBP 30 on a gift",
+            "Lunch cost CNY 25", "Bought milk for 10 yuan", "Paid 16 USD with Visa", "Spent 70 dollars at Costco",
+            "Bought headphones for $90", "Taxi fare was 22 bucks", "The hotel cost €95", "Paid 12 euros for coffee",
+            "Spent 35 pounds on groceries", "Dinner was 60 USD", "Bus pass cost 900 yen", "Paid $7 for breakfast",
+            "Spent 45 yuan on a notebook"
+        ]
+        let todo = [
+            "Remind me to call Mom tomorrow", "Remind me to submit the report Friday", "Remind me to buy milk tonight",
+            "Remind me to email Alex Monday", "Remind me to pick up the parcel Tuesday", "Remind me to visit the dentist Wednesday",
+            "Remind me to water plants Thursday", "Remind me to check the car Saturday", "Remind me to clean the desk Sunday",
+            "Remind me to send the invoice tomorrow morning", "Remind me to call the bank tomorrow afternoon",
+            "Remind me to pack my bag tomorrow evening", "Remind me to take a break in 2 hours",
+            "Remind me to leave in 30 minutes", "Remind me to review notes this weekend", "Remind me to finish the draft today",
+            "Remind me to book tickets tomorrow", "Remind me to reply to Sam Friday morning",
+            "Remind me to charge my phone tonight", "Remind me to make breakfast tomorrow morning",
+            "Remind me to check the calendar Monday", "Remind me to send photos Tuesday afternoon",
+            "Remind me to call the doctor Wednesday morning", "Remind me to collect the mail Thursday",
+            "Remind me to prepare lunch tomorrow at 8 AM"
+        ]
+        let memo = [
+            "The garage code is blue pine", "Mom likes jasmine tea", "The spare key is in the drawer",
+            "Our WiFi name is Lake House", "The car manual is in the glove box", "The bakery on Main Street is quiet",
+            "The new chair feels comfortable", "The pantry has rice and beans", "The blue folder holds receipts",
+            "The train station has a small cafe", "The garden soil is very dry", "The dog prefers the red blanket",
+            "The camera battery is in the cabinet", "The kitchen light flickers sometimes", "The travel bag has a hidden pocket",
+            "The guest room window opens inward", "The printer paper is on the top shelf", "The museum entrance is on Oak Street",
+            "The neighbor has a friendly cat", "The library card is in my wallet", "The recipe uses fresh basil",
+            "The old laptop is in the closet", "The meeting room has a whiteboard", "The balcony gets afternoon sun",
+            "The blue mug belongs to Sam"
+        ]
+        let idea = [
+            "Idea: a simpler welcome screen", "Idea: show a calm background", "Idea: use larger buttons",
+            "Idea: group related notes", "Idea: reduce setup steps", "Idea: make search easier",
+            "Idea: highlight important notes", "Idea: offer a quiet mode", "Idea: use softer colors",
+            "Idea: make cards easier to scan", "Idea: add a compact layout", "Idea: show recent activity",
+            "Idea: improve empty states", "Idea: let users reorder cards", "Idea: use clearer labels",
+            "Idea: show a short hint", "Idea: make editing faster", "Idea: simplify sharing",
+            "Idea: support offline drafts", "Idea: remember the last filter", "Idea: offer a reading view",
+            "Idea: make text more legible", "Idea: explain permissions clearly", "Idea: reduce visual clutter",
+            "Idea: keep the home screen peaceful"
+        ]
+        XCTAssertEqual(ledger.count + todo.count + memo.count + idea.count, 100)
+        for (module, inputs) in [(Module.ledger, ledger), (.todo, todo), (.memo, memo), (.idea, idea)] {
+            for input in inputs {
+                guard case .create(let record) = try await parser.parse(input) else { return XCTFail(input) }
+                XCTAssertEqual(record.module, module, input)
+                XCTAssertEqual(record.rawInput, input)
+                if module == .ledger { XCTAssertFalse(record.amountItems.isEmpty, input) }
+                if module == .todo { XCTAssertNotNil(record.dueAt, input) }
+            }
+        }
+        let segments = parser.parseSegments("Paid $16 at Walmart and remind me to buy milk tomorrow")
+        XCTAssertEqual(segments.map(\.module), [.ledger, .todo])
+    }
+
 #if canImport(UIKit) && !canImport(QuickNoteCore)
     @MainActor func testShareRendererProducesPNGAndPrivacyOptionsChangeOutput() throws {
         let record = Record(module: .ledger, rawInput: "Walmart 16 USD", tags: ["shopping"], merchant: "Walmart", amount: 16, currency: "USD")
