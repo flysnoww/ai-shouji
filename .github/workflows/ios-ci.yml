@@ -51,6 +51,23 @@ jobs:
             -resultBundlePath TestResults.xcresult \
             CODE_SIGNING_ALLOWED=NO | tee xcodebuild-test.log
 
+      - name: Export simulator screenshots
+        if: always()
+        run: |
+          if [ -d TestResults.xcresult ]; then
+            xcrun xcresulttool export attachments --path TestResults.xcresult --output-path ui-screenshots
+          fi
+
+      - name: Upload simulator interaction evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ui-regression-evidence
+          path: |
+            TestResults.xcresult
+            ui-screenshots
+          if-no-files-found: ignore
+
       - name: Upload failure logs
         if: failure()
         uses: actions/upload-artifact@v4

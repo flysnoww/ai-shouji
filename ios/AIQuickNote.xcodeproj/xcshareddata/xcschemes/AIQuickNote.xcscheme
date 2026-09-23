@@ -10,6 +10,9 @@
    <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES">
       <Testables>
          <TestableReference skipped="NO">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="B50000000000000000000001" BuildableName="AIQuickNoteUITests.xctest" BlueprintName="AIQuickNoteUITests" ReferencedContainer="container:AIQuickNote.xcodeproj"/>
+         </TestableReference>
+         <TestableReference skipped="NO">
             <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A50000000000000000000002" BuildableName="AIQuickNoteTests.xctest" BlueprintName="AIQuickNoteTests" ReferencedContainer="container:AIQuickNote.xcodeproj"/>
          </TestableReference>
       </Testables>
