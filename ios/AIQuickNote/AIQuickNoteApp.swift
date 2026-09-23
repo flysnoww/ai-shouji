@@ -305,9 +305,9 @@ struct ModuleCard: View {
             .rotation3DEffect(.degrees(reduceMotion ? 0 : Double((touch?.x ?? geometry.size.width / 2) / geometry.size.width - 0.5) * 5), axis: (x: 0, y: 1, z: 0), perspective: 0.5)
             }
             .buttonStyle(.plain)
+            .disabled(touch != nil)
             .accessibilityIdentifier("home.module.\(module.rawValue)")
             .simultaneousGesture(DragGesture(minimumDistance: 12).updating($touch) { value, state, _ in
-                guard !reduceMotion else { return }
                 state = CGPoint(x: min(max(value.location.x, 0), geometry.size.width), y: min(max(value.location.y, 0), geometry.size.height))
             })
         }.frame(height: 232)
@@ -327,7 +327,7 @@ struct ReviewView: View {
 
 struct ModuleListView: View {
     @EnvironmentObject private var model: AppModel; @State private var adding = false; @State private var selectedRecord: Record?; let module: Module
-    var body: some View { List(model.records.filter { $0.module == module }) { record in Button { selectedRecord = record } label: { RecordRow(record: record) }.buttonStyle(.plain).accessibilityIdentifier("record.\(record.id.uuidString)").listRowBackground(Color.white.opacity(0.78)) }.listStyle(.insetGrouped).scrollContentBackground(.hidden).scrollDismissesKeyboard(.interactively).background(LakeBackground()).navigationTitle(LocalizedStringKey(module.title)).toolbar { Button { adding = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $adding) { NavigationStack { ModuleComposerView(module: module) } }.sheet(item: $selectedRecord) { record in DetailSheet(record: record) }.overlay { if model.records.allSatisfy({ $0.module != module }) { if let image = SkinManager.shared.image("emptyStateDecoration") { ContentUnavailableView { Label("暂无记录", systemImage: module.icon) } description: { Image(uiImage: image).resizable().scaledToFit().frame(width: 150, height: 150) } } else { ContentUnavailableView("暂无记录", systemImage: module.icon) } } }.onAppear { model.reload() } }
+    var body: some View { List(model.records.filter { $0.module == module }) { record in Button { selectedRecord = record } label: { RecordRow(record: record).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityIdentifier("record.\(record.id.uuidString)").listRowBackground(Color.white.opacity(0.78)) }.listStyle(.insetGrouped).scrollContentBackground(.hidden).scrollDismissesKeyboard(.interactively).background(LakeBackground()).navigationTitle(LocalizedStringKey(module.title)).toolbar { Button { adding = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $adding) { NavigationStack { ModuleComposerView(module: module) } }.sheet(item: $selectedRecord) { record in DetailSheet(record: record) }.overlay { if model.records.allSatisfy({ $0.module != module }) { if let image = SkinManager.shared.image("emptyStateDecoration") { ContentUnavailableView { Label("暂无记录", systemImage: module.icon) } description: { Image(uiImage: image).resizable().scaledToFit().frame(width: 150, height: 150) } } else { ContentUnavailableView("暂无记录", systemImage: module.icon) } } }.onAppear { model.reload() } }
 }
 
 struct ModuleComposerView: View {
