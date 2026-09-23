@@ -44,7 +44,7 @@ public struct MockAuthProvider: AuthProvider {
 }
 
 public enum CurrencyCanonicalizer {
-    public static let aliasPattern = #"US\s*dollars?|US\$|dollars?|bucks?|USD|美元|美金|\$|JPY|日元|円|yen|EUR|欧元|euros?|欧|€|CNY|RMB|人民币|yuan|元|块|¥|￥|GBP|英镑|pounds?|£"#
+    public static let aliasPattern = #"US\s*dollars?|US\$|dollars?|bucks?|USD|美元|美金|\$|JPY|日元|円|yen|euros?|EUR|欧元|欧|€|CNY|RMB|人民币|yuan|元|块|¥|￥|GBP|英镑|pounds?|£"#
     public static func recognized(_ value: String) -> String? { guard let regex = try? NSRegularExpression(pattern: #"^(?:\#(aliasPattern))$"#, options: .caseInsensitive), regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)) != nil else { return nil }; return canonical(value) }
     public static func canonical(_ value: String?) -> String? {
         guard let raw = value?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
