@@ -16,6 +16,7 @@ Baseline: `main@31db878`. Keep the four modules, owner scoped records, existing 
 - 2026-09-22: Baseline inspected. `amountItems` returns after the first symbol amount; currency query parsing uses a separate alias list. Speech is fixed to zh-CN. Detail is a navigation destination. No data migration planned.
 - 2026-09-22: Shared currency aliases and mixed-amount extraction; canonical currency search and filtered totals. Added an explicit 100-utterance English parser benchmark and conservative multi-intent split. English Speech is opt-in and still uses one recognizer.
 - 2026-09-22: Home card touch tilt/highlight respects Reduce Motion. Search/list present Detail with a native sheet. Viewing a missing external reminder now reports status without writing the record; reminder linking is guarded against duplicate concurrent requests.
+- 2026-09-22: First macOS CI exposed a partial `EUR` match inside `euros`; fixed alias ordering. Follow-up review strengthened the 100-case benchmark with natural English commands, dirty multi-intent speech text, and explicit versus implicit clock-time tests.
 
 ## Deferred verification
 

@@ -282,23 +282,23 @@ final class CoreTests: XCTestCase {
             "Spent 45 yuan on a notebook"
         ]
         let todo = [
-            "Remind me to call Mom tomorrow", "Remind me to submit the report Friday", "Remind me to buy milk tonight",
-            "Remind me to email Alex Monday", "Remind me to pick up the parcel Tuesday", "Remind me to visit the dentist Wednesday",
-            "Remind me to water plants Thursday", "Remind me to check the car Saturday", "Remind me to clean the desk Sunday",
-            "Remind me to send the invoice tomorrow morning", "Remind me to call the bank tomorrow afternoon",
-            "Remind me to pack my bag tomorrow evening", "Remind me to take a break in 2 hours",
-            "Remind me to leave in 30 minutes", "Remind me to review notes this weekend", "Remind me to finish the draft today",
+            "Call Mom tomorrow morning", "Dentist next Monday at 10 AM", "Buy milk tonight",
+            "Email Alex Monday", "Pick up the parcel Tuesday", "Visit the dentist Wednesday",
+            "Water plants Thursday", "Check the car Saturday", "Remind me to clean the desk Sunday",
+            "Send the invoice tomorrow morning", "Call the bank tomorrow afternoon",
+            "Pack my bag tomorrow evening", "Take a break in two hours",
+            "Remind me to leave in 30 minutes", "Review notes this weekend", "Finish the draft today",
             "Remind me to book tickets tomorrow", "Remind me to reply to Sam Friday morning",
-            "Remind me to charge my phone tonight", "Remind me to make breakfast tomorrow morning",
-            "Remind me to check the calendar Monday", "Remind me to send photos Tuesday afternoon",
-            "Remind me to call the doctor Wednesday morning", "Remind me to collect the mail Thursday",
-            "Remind me to prepare lunch tomorrow at 8 AM"
+            "Remind me to charge my phone tonight", "Make breakfast tomorrow morning",
+            "Check the calendar Monday", "Send photos Tuesday afternoon",
+            "Call the doctor Wednesday morning", "Remind me to collect the mail Thursday",
+            "Pick up package at 6 PM"
         ]
         let memo = [
-            "The garage code is blue pine", "Mom likes jasmine tea", "The spare key is in the drawer",
+            "Remember the garage code is blue pine", "Note that Mike prefers the window seat", "The spare key is in the drawer",
             "Our WiFi name is Lake House", "The car manual is in the glove box", "The bakery on Main Street is quiet",
             "The new chair feels comfortable", "The pantry has rice and beans", "The blue folder holds receipts",
-            "The train station has a small cafe", "The garden soil is very dry", "The dog prefers the red blanket",
+            "The train station has a small cafe", "The tire pressure looked low today", "The dog prefers the red blanket",
             "The camera battery is in the cabinet", "The kitchen light flickers sometimes", "The travel bag has a hidden pocket",
             "The guest room window opens inward", "The printer paper is on the top shelf", "The museum entrance is on Oak Street",
             "The neighbor has a friendly cat", "The library card is in my wallet", "The recipe uses fresh basil",
@@ -306,7 +306,7 @@ final class CoreTests: XCTestCase {
             "The blue mug belongs to Sam"
         ]
         let idea = [
-            "Idea: a simpler welcome screen", "Idea: show a calm background", "Idea: use larger buttons",
+            "Idea: a simpler welcome screen", "Maybe add a dark reading mode", "I have an idea for a travel planner",
             "Idea: group related notes", "Idea: reduce setup steps", "Idea: make search easier",
             "Idea: highlight important notes", "Idea: offer a quiet mode", "Idea: use softer colors",
             "Idea: make cards easier to scan", "Idea: add a compact layout", "Idea: show recent activity",
@@ -328,6 +328,25 @@ final class CoreTests: XCTestCase {
         }
         let segments = parser.parseSegments("Paid $16 at Walmart and remind me to buy milk tomorrow")
         XCTAssertEqual(segments.map(\.module), [.ledger, .todo])
+        XCTAssertEqual(parser.parseSegments("paid 42 bucks for gas note that the tire pressure looked low").map(\.module), [.ledger, .memo])
+        let dirtySegments = parser.parseSegments("paid twenty five bucks gas and remind me check tires tonight")
+        XCTAssertEqual(dirtySegments.map(\.module), [.ledger, .todo])
+        XCTAssertEqual(dirtySegments.first?.amount, 25)
+        XCTAssertNotNil(dirtySegments.last?.dueAt)
+        let conversational = parser.parseSegments("I spent 12 dollars on lunch and remind me to call Mom at six")
+        XCTAssertEqual(conversational.map(\.module), [.ledger, .todo])
+        XCTAssertEqual(conversational.first?.amount, 12)
+        XCTAssertNotNil(conversational.last?.dueAt)
+    }
+
+    func testEnglishClockWithoutDateRollsForwardButExplicitTodayDoesNot() async throws {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 22, hour: 20))!, parser = DeterministicDraftParser(calendar: calendar, now: { now })
+        guard case .create(let implicit) = try await parser.parse("Pick up package at 6"), case .create(let explicit) = try await parser.parse("Pick up package today at 6 PM") else { return XCTFail() }
+        XCTAssertEqual(calendar.component(.day, from: try XCTUnwrap(implicit.dueAt)), 23)
+        XCTAssertEqual(calendar.component(.hour, from: try XCTUnwrap(implicit.dueAt)), 6)
+        XCTAssertEqual(calendar.component(.day, from: try XCTUnwrap(explicit.dueAt)), 22)
+        XCTAssertEqual(calendar.component(.hour, from: try XCTUnwrap(explicit.dueAt)), 18)
     }
 
 #if canImport(UIKit) && !canImport(QuickNoteCore)
