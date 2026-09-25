@@ -20,11 +20,13 @@ Set `POSTGRES_PASSWORD` in `infra/identity/.env` to a private random value of at
 ./infra/identity/scripts/identity.ps1 start
 ```
 
-The first startup downloads the pinned images and seeds the dedicated database through Logto's bundled CLI. Open `http://127.0.0.1:3002` and create the local Admin Console operator on the welcome screen. The core/OIDC endpoint is `http://127.0.0.1:3001`; its discovery document is `http://127.0.0.1:3001/oidc/.well-known/openid-configuration`.
+The first startup downloads the pinned images and seeds the dedicated database through Logto's bundled CLI. Open the Admin Console at the configured local endpoint and create the local operator on the welcome screen. The core endpoint hosts OIDC discovery at `/oidc/.well-known/openid-configuration`.
 
 The Compose seed uses Logto's `--dapc` option to avoid an outbound Have I Been Pwned dependency for the initial local Admin Console account. This affects the admin tenant only; it does not configure or enable app end-user password login.
 
-No app client or end-user provider flow is configured by this local foundation. Before any future local app-auth test, verify the Logto Sign-in experience explicitly: use email verification code only, keep password sign-in disabled, disable automatic email/phone account linking, and leave Apple/Google connectors absent until their test credentials and linking controls are reviewed. Creating the Admin Console operator is not a Fireseed end-user account test.
+The local Compose stack includes Mailpit as a development-only SMTP sink. Its UI is loopback-bound at `http://127.0.0.1:18025`; Logto reaches its SMTP service at `mailpit:1025` inside Compose. Configure the official SMTP connector with no credentials for that isolated network. Mailpit captures messages rather than delivering them externally; Logto still generates and verifies real OTPs. Do not use this setup for production.
+
+No app client or end-user provider flow is configured yet. For the Phase 2 test, use email verification code only, keep password sign-in disabled, disable automatic email/phone account linking, and leave Apple/Google connectors absent. The Admin Console operator is infrastructure administration, not a Fireseed end-user account.
 
 ## Commands
 
@@ -47,12 +49,13 @@ No app client or end-user provider flow is configured by this local foundation. 
 - Windows reserves host TCP ports 3001/3002. This machine's ignored `.env` uses loopback ports 3301/3302 instead; PostgreSQL has no host port mapping. Other hosts can keep the documented 3001/3002 defaults.
 - Verified `start`, `health`, `smoke`, ordinary `stop`/`start` persistence, and `reset`. The smoke marker survived PostgreSQL/Logto restarts and was removed. Stop/start retained the named volume and all 79 application tables. Reset replaced that local volume and returned both services to healthy running state.
 - Runtime fixes: the health check accepts the Admin Console's expected 302 redirect; the PowerShell Compose wrapper forwards native flags; local endpoint parsing reads the correct regex capture; and the temporary smoke table enables RLS so Logto can restart safely.
-- No Admin Console operator or end-user account was created. No app client or email/social provider is configured, so end-user authentication is not yet tested; persistence was verified with the temporary database marker. No AIQuickNote data is present.
+- Phase 2 preparation: `identity.ps1 health` now reads the endpoint value from its single regex capture and accepts the Admin Console's 302 without PowerShell's redirect-handling failure. The local-only Mailpit v1.27.4 service starts with host ports 11025 (SMTP) and 18025 (UI); Windows reserves 1025 on this machine.
+- The local Admin Console operator was created by the user after Phase 1. No end-user account was created in Phase 1; the app client and connectors remain unconfigured, so end-user authentication has not yet been tested. Persistence was verified with the temporary database marker. No AIQuickNote data is present.
 - The first image pull coincided with a full Windows system drive and Docker reported read-only/content I/O errors. After freeing space and re-pulling the same pinned Logto image, its Node runtime (v22.23.2) and the service started normally.
 
 ## Providers and current limits
 
-Email verification-code delivery requires an email connector and working mail service. Apple and Google require provider-side applications and credentials. None are supplied or tested here. The Sign-in experience must disable automatic account linking by email/phone. Logto still presents a manual link-or-create option in a duplicate-email social-registration flow; its public docs do not establish that this branch performs the required recent verification. Do not expose production sign-up until this is checked against the pinned Logto version. Future IdentityKit linking should use the signed-in Account API flow with fresh verification of both the existing account and the new provider identity.
+The local email sink is running, but the SMTP connector, native/public app, and end-user sign-in settings still require configuration in the Admin Console. This task's Codex browser is not authenticated to the already-created local operator; sign in there to continue. Apple and Google remain unconfigured. Logto still presents a manual link-or-create option in a duplicate-email social-registration flow; its public docs do not establish that this branch performs the required recent verification. Do not expose production sign-up until this is checked against the pinned Logto version.
 
 ## Version and upgrade
 

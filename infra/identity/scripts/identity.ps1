@@ -36,7 +36,12 @@ function Test-Endpoints {
     $admin = Get-LocalValue "LOGTO_ADMIN_ENDPOINT" "http://127.0.0.1:3002"
     $discovery = Invoke-RestMethod -Uri "$($core.TrimEnd('/'))/oidc/.well-known/openid-configuration" -TimeoutSec 10
     if (-not $discovery.issuer -or -not $discovery.authorization_endpoint) { throw "OIDC discovery response is incomplete." }
-    $null = Invoke-WebRequest -Uri $admin -TimeoutSec 10
+    $adminRequest = [System.Net.HttpWebRequest]::Create($admin)
+    $adminRequest.AllowAutoRedirect = $false
+    $adminRequest.Timeout = 10000
+    $adminResponse = $adminRequest.GetResponse()
+    if ([int]$adminResponse.StatusCode -ge 400) { throw "Admin Console returned HTTP $([int]$adminResponse.StatusCode)." }
+    $adminResponse.Close()
     Write-Output "PostgreSQL: healthy (checked by Compose)"
     Write-Output "Logto core and OIDC discovery: reachable"
     Write-Output "Admin Console: reachable"

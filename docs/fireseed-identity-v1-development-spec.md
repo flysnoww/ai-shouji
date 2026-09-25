@@ -1,6 +1,6 @@
 # Fireseed Identity V1 Development Spec
 
-Status: architecture freeze for Phase 0 / Phase 1; local infrastructure only.
+Status: Phase 2 in progress; local identity infrastructure and test mail sink only. No end-user authentication loop is verified yet.
 Baseline: `34c85b4c0e8150e25ff0f77d07ceed103a35dd8a` (AIQuickNote V1 UI regression candidate).
 Last upstream review: 2026-09-23.
 
@@ -60,16 +60,13 @@ No end-user password authentication is enabled by the Fireseed V1 configuration.
 
 ## Minimal future IdentityKit contract
 
-The Swift API is deferred until integration design, but the app-facing contract is frozen conceptually:
+The Swift API is deferred until integration design. The Phase 2 app-facing semantics are intentionally small:
 
-- `currentUser`, `stableUserID`, `isAuthenticated`
-- `signIn`, `signOut`
-- `getProfile`, `updateProfile`
-- `listAuthenticationMethods`, `linkAuthenticationMethod`, `unlinkAuthenticationMethod`
-- `listSessions`, `revokeSession`
-- `deleteAccount`
+- `IdentityState`: `signedOut` or `signedIn(user)`
+- `FireseedUser`: `stableUserID` (OIDC `sub`), optional `email`, optional `displayName`
+- operations: `signIn()`, `signOut()`, `restoreSession()`
 
-Apps depend only on this contract. Logto SDK types and endpoints stay inside the Logto adapter. Phase 1 adds no Swift package dependency.
+No Swift API or SDK is implemented in Phase 2. A later adapter keeps Logto SDK types and endpoints behind this small contract.
 
 ## Trust and data boundaries
 
@@ -104,7 +101,8 @@ Follow `docs/fireseed-identity-logging-change-protocol.md`. Never log passwords,
 - Current stable release at review: Logto OSS `v1.43.0`, published by the upstream Logto repository. Its official demo Compose uses `svhd/logto` and PostgreSQL 17. The demo is explicitly not for production.
 - Logto OSS defaults to ports 3001 (core) and 3002 (Admin Console), and officially recommends CLI database seeding.
 - Logto Swift SDK v2 is currently documented as `2.0.0`, using `ASWebAuthenticationSession`; no SDK is added in this phase.
-- Email OTP requires a configured email connector for delivery. Apple and Google require their own provider-side applications/credentials.
+- Logto's built-in email service is Cloud-only for OSS users; local development uses the official SMTP connector pointed at a loopback-only Mailpit sink. Mailpit captures, but does not externally deliver, Logto-generated verification emails.
+- Local operator sign-in, SMTP connector, native app client, email-only sign-in settings, and end-user OTP flow are not yet verified in Phase 2.
 - Account API sensitive operations use short-lived verification records. Social linking requires both recent verification of the current user and verification of the new social identity.
 - Automatic email/phone matching can be disabled, but the manual first-registration linking branch needs a pinned-version security check as described above.
 - Logto self-hosting documentation lists substantial recommended resources (2 vCPU, 8 GiB RAM, 256 GiB disk). A typical developer laptop may run below this recommendation; record actual resource behavior during the pending local runtime smoke check.
@@ -125,8 +123,8 @@ Primary references reviewed on 2026-09-23:
 
 ## Open questions / blockers
 
-1. Docker/Docker Compose is not installed or on PATH in the current Windows environment. Container startup, database health, OIDC discovery, restart persistence, Admin Console reachability, and reset behavior cannot yet be executed here.
-2. Configure local email, Apple, and Google connectors only when local development credentials/test mail delivery are available. No delivery/provider flow has been tested.
+1. Sign into the local Admin Console in the active Codex browser, then configure the Mailpit SMTP connector, native/public app client, exact redirects, and email-verification-code-only sign-in.
+2. Complete signup, logout/re-login, and Logto/PostgreSQL restart tests; compare the same issuer-scoped `sub` each time.
 3. Verify Logto `1.43.0` manual duplicate-email account-linking branch meets Fireseed's recent-verification constraint before enabling social sign-up for real users.
 4. Verify final-method deletion behavior through end-user Account API for every enabled authentication method before shipping IdentityKit unlink controls.
 5. Immutable image digests should be captured for each target OS/architecture before shared CI or non-local deployment.
