@@ -9,40 +9,6 @@ public enum Module: String, Codable, CaseIterable, Identifiable, Sendable {
 
 public enum TodoStatus: String, Codable, CaseIterable, Sendable { case pending = "待处理", done = "已完成" }
 
-public enum IdentityProvider: String, Codable, CaseIterable, Sendable { case apple, google, x, facebook }
-
-public struct IdentityUser: Codable, Hashable, Sendable {
-    public var id: String
-    public var provider: IdentityProvider
-    public var providerSubject: String
-    public var displayName: String
-    public var email: String?
-    public var createdAt: Date
-    public init(id: String, provider: IdentityProvider, providerSubject: String, displayName: String, email: String? = nil, createdAt: Date = Date()) { self.id = id; self.provider = provider; self.providerSubject = providerSubject; self.displayName = displayName; self.email = email; self.createdAt = createdAt }
-}
-
-public protocol AuthProvider: Sendable {
-    var providerID: IdentityProvider { get }
-    var displayName: String { get }
-    func signIn(account: Int) async throws -> IdentityUser
-}
-
-public struct MockAuthProvider: AuthProvider {
-    public let providerID: IdentityProvider
-    public var displayName: String { providerID == .x ? "X" : providerID.rawValue.capitalized }
-    public init(_ providerID: IdentityProvider) { self.providerID = providerID }
-    public func signIn(account: Int) async throws -> IdentityUser {
-        let slot = account == 2 ? 2 : 1
-        let ids: [IdentityProvider: [String]] = [
-            .apple: ["00000000-0000-4000-8000-000000000101", "00000000-0000-4000-8000-000000000102"],
-            .google: ["00000000-0000-4000-8000-000000000201", "00000000-0000-4000-8000-000000000202"],
-            .x: ["00000000-0000-4000-8000-000000000301", "00000000-0000-4000-8000-000000000302"],
-            .facebook: ["00000000-0000-4000-8000-000000000401", "00000000-0000-4000-8000-000000000402"]
-        ]
-        return IdentityUser(id: ids[providerID]![slot - 1], provider: providerID, providerSubject: "mock-\(providerID.rawValue)-user-00\(slot)", displayName: "Test User \(slot)", email: "test\(slot)@example.invalid", createdAt: Date(timeIntervalSince1970: 0))
-    }
-}
-
 public enum CurrencyCanonicalizer {
     public static let aliasPattern = #"US\s*dollars?|US\$|dollars?|bucks?|USD|美元|美金|\$|JPY|日元|円|yen|euros?|EUR|欧元|欧|€|CNY|RMB|人民币|yuan|元|块|¥|￥|GBP|英镑|pounds?|£"#
     public static func recognized(_ value: String) -> String? { guard let regex = try? NSRegularExpression(pattern: #"^(?:\#(aliasPattern))$"#, options: .caseInsensitive), regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)) != nil else { return nil }; return canonical(value) }
@@ -317,7 +283,7 @@ public protocol RecordStore: Sendable {
     func save(_ records: [Record]) throws
 }
 
-public enum CoreError: Error, Equatable { case identityRequired, emptyContent, recordNotFound }
+public enum CoreError: Error, Equatable { case identityRequired, emptyContent, recordNotFound, recordNotOwned, backupOwnerMismatch }
 
 public final class FileRecordStore: RecordStore, @unchecked Sendable {
     private let url: URL
@@ -349,6 +315,7 @@ public final class QuickNoteCore: @unchecked Sendable {
         guard !draft.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CoreError.emptyContent }
         var records = try store.load(), value = draft
         value.ownerID = ownerID
+        guard !records.contains(where: { $0.id == value.id && $0.ownerID != ownerID }) else { throw CoreError.recordNotOwned }
         if let index = records.firstIndex(where: { $0.id == value.id && $0.ownerID == ownerID }) {
             value.createdAt = records[index].createdAt
             value = normalizeForModule(value); value.updatedAt = records[index].updatedAt
@@ -420,8 +387,9 @@ public final class QuickNoteCore: @unchecked Sendable {
 
     public func replaceCurrentOwnerRecords(with restored: [Record]) throws {
         guard let ownerID = identity.confirmedUserID else { throw CoreError.identityRequired }
+        guard restored.allSatisfy({ $0.ownerID == ownerID }) else { throw CoreError.backupOwnerMismatch }
         var all = try store.load().filter { $0.ownerID != ownerID }
-        all += restored.map { var value = $0; value.ownerID = ownerID; return normalizeForModule(value) }
+        all += restored.map { normalizeForModule($0) }
         try store.save(all)
     }
 }
@@ -433,6 +401,7 @@ public struct ExportManifest: Codable, Equatable, Sendable {
     public var recordCount: Int
     public var userCount: Int
     public var attachmentCount: Int
+    public var ownerID: String?
 }
 
 public struct ExportMetadata: Codable, Equatable, Sendable {
@@ -444,11 +413,11 @@ public struct ExportMetadata: Codable, Equatable, Sendable {
 
 public struct BackupPayload: Equatable, Sendable {
     public var records: [Record]
-    public var users: [IdentityUser]
     public var settings: [String: String]
+    public var ownerID: String
 }
 
-public enum ArchiveError: Error, Equatable { case invalidArchive, unsupportedSchema }
+public enum ArchiveError: Error, Equatable { case invalidArchive, unsupportedSchema, ownershipMismatch }
 
 public enum ZipArchive {
     public static func make(_ entries: [(String, Data)]) -> Data {
@@ -479,28 +448,34 @@ public enum ZipArchive {
 }
 
 public enum ExportService {
-    public static func makeExport(records: [Record], users: [IdentityUser], appVersion: String = "0.1", locale: String = Locale.current.identifier, timezone: String = TimeZone.current.identifier, exportedAt: Date = Date()) throws -> Data {
-        try archive(records: records, users: users, settings: nil, appVersion: appVersion, locale: locale, timezone: timezone, exportedAt: exportedAt)
+    public static func makeExport(records: [Record], appVersion: String = "0.1", locale: String = Locale.current.identifier, timezone: String = TimeZone.current.identifier, exportedAt: Date = Date()) throws -> Data {
+        try archive(records: records, ownerID: nil, settings: nil, schemaVersion: 1, appVersion: appVersion, locale: locale, timezone: timezone, exportedAt: exportedAt)
     }
-    static func archive(records: [Record], users: [IdentityUser], settings: [String: String]?, appVersion: String, locale: String, timezone: String, exportedAt: Date) throws -> Data {
+    static func archive(records: [Record], ownerID: String?, settings: [String: String]?, schemaVersion: Int, appVersion: String, locale: String, timezone: String, exportedAt: Date) throws -> Data {
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601; encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let manifest = ExportManifest(schemaVersion: 1, appVersion: appVersion, exportedAt: exportedAt, recordCount: records.count, userCount: users.count, attachmentCount: 0)
+        let manifest = ExportManifest(schemaVersion: schemaVersion, appVersion: appVersion, exportedAt: exportedAt, recordCount: records.count, userCount: 0, attachmentCount: 0, ownerID: ownerID)
         let metadata = ExportMetadata(locale: locale, timezone: timezone, currencyCanonicalizationVersion: 1, modules: Module.allCases.map(\.rawValue))
-        var entries = [("manifest.json", try encoder.encode(manifest)), ("records.json", try encoder.encode(records)), ("users.json", try encoder.encode(users)), ("metadata.json", try encoder.encode(metadata)), ("attachments/", Data())]
+        var entries = [("manifest.json", try encoder.encode(manifest)), ("records.json", try encoder.encode(records)), ("metadata.json", try encoder.encode(metadata)), ("attachments/", Data())]
         if let settings { entries.append(("settings.json", try encoder.encode(settings))) }
         return ZipArchive.make(entries)
     }
 }
 
 public enum BackupService {
-    public static func makeBackup(records: [Record], users: [IdentityUser], settings: [String: String], appVersion: String = "0.1") throws -> Data { try ExportService.archive(records: records, users: users, settings: settings, appVersion: appVersion, locale: Locale.current.identifier, timezone: TimeZone.current.identifier, exportedAt: Date()) }
+    public static func makeBackup(records: [Record], ownerID: String, settings: [String: String], appVersion: String = "0.1") throws -> Data {
+        guard !ownerID.isEmpty, records.allSatisfy({ $0.ownerID == ownerID }) else { throw ArchiveError.ownershipMismatch }
+        return try ExportService.archive(records: records, ownerID: ownerID, settings: settings, schemaVersion: 2, appVersion: appVersion, locale: Locale.current.identifier, timezone: TimeZone.current.identifier, exportedAt: Date())
+    }
     public static func validateAndRead(_ archive: Data) throws -> BackupPayload {
         let entries = try ZipArchive.entries(in: archive); let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-        guard let manifestData = entries["manifest.json"], let recordsData = entries["records.json"], let usersData = entries["users.json"], let settingsData = entries["settings.json"] else { throw ArchiveError.invalidArchive }
-        let manifest = try decoder.decode(ExportManifest.self, from: manifestData); guard manifest.schemaVersion == 1 else { throw ArchiveError.unsupportedSchema }
-        let records = try decoder.decode([Record].self, from: recordsData), users = try decoder.decode([IdentityUser].self, from: usersData), settings = try decoder.decode([String: String].self, from: settingsData)
-        guard manifest.recordCount == records.count, manifest.userCount == users.count else { throw ArchiveError.invalidArchive }
-        return BackupPayload(records: records, users: users, settings: settings)
+        guard let manifestData = entries["manifest.json"], let recordsData = entries["records.json"], let settingsData = entries["settings.json"] else { throw ArchiveError.invalidArchive }
+        let manifest = try decoder.decode(ExportManifest.self, from: manifestData); guard manifest.schemaVersion == 2 else { throw ArchiveError.unsupportedSchema }
+        guard Set(entries.keys) == Set(["manifest.json", "records.json", "metadata.json", "attachments/", "settings.json"]), entries["users.json"] == nil else { throw ArchiveError.invalidArchive }
+        guard let ownerID = manifest.ownerID, !ownerID.isEmpty else { throw ArchiveError.ownershipMismatch }
+        let records = try decoder.decode([Record].self, from: recordsData), settings = try decoder.decode([String: String].self, from: settingsData)
+        guard manifest.recordCount == records.count, manifest.userCount == 0 else { throw ArchiveError.invalidArchive }
+        guard records.allSatisfy({ $0.ownerID == ownerID }) else { throw ArchiveError.ownershipMismatch }
+        return BackupPayload(records: records, settings: settings, ownerID: ownerID)
     }
 }
 

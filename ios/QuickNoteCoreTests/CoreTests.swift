@@ -73,6 +73,14 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(store.saveCount, 0)
     }
 
+    func testRepeatedSaveForAnotherOwnerCannotClaimExistingRecord() throws {
+        let recordID = UUID(), store = SpyStore(), core = QuickNoteCore(store: store, identity: TestIdentity("owner-b"))
+        store.records = [Record(id: recordID, ownerID: "owner-a", module: .memo, rawInput: "owner A")]
+        XCTAssertThrowsError(try core.save(Record(id: recordID, module: .memo, rawInput: "edited"))) { XCTAssertEqual($0 as? CoreError, .recordNotOwned) }
+        XCTAssertEqual(store.saveCount, 0)
+        XCTAssertEqual(store.records.first?.ownerID, "owner-a")
+    }
+
     func testModuleNormalizationPreservesRawInput() throws {
         let core = QuickNoteCore(store: MemoryRecordStore(), identity: TestIdentity("user-1"))
         var ledger = try core.save(Record(module: .ledger, rawInput: "原始账目", merchant: "商家", amount: 16, paymentMethod: "现金"))
@@ -156,18 +164,54 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(saved.createdAt, sep12); XCTAssertGreaterThan(saved.updatedAt, sep12); XCTAssertEqual(store.saveCount, before + 1)
     }
 
-    func testMockIdentityIsStableAndRecordsAreOwnerIsolated() async throws {
-        let provider = MockAuthProvider(.google), userA = try await provider.signIn(account: 1), userAAgain = try await provider.signIn(account: 1), userB = try await provider.signIn(account: 2)
-        XCTAssertEqual(userA.id, userAAgain.id); XCTAssertNotEqual(userA.id, userB.id)
-        let identity = TestIdentity(nil), store = MemoryRecordStore(), core = QuickNoteCore(store: store, identity: identity)
-        XCTAssertEqual(try core.records(), [])
-        XCTAssertThrowsError(try core.save(Record(module: .ledger, rawInput: "沃尔玛16美元")))
-        identity.confirmedUserID = userA.id; _ = try core.save(Record(module: .ledger, rawInput: "沃尔玛16美元", amount: 16, currency: "美元"))
-        identity.confirmedUserID = userB.id; XCTAssertEqual(try core.records(), []); _ = try core.save(Record(module: .todo, rawInput: "明天买牛奶"))
+    func testOwnerIsolationAndSameOwnerReturn() throws {
+        let userA = "fireseed-mock-user-a", userB = "fireseed-mock-user-b"
+        let identity = TestIdentity(userA), store = MemoryRecordStore(), core = QuickNoteCore(store: store, identity: identity)
+        let recordA = try core.save(Record(module: .ledger, rawInput: "沃尔玛16美元", amount: 16, currency: "美元"))
+        XCTAssertEqual(recordA.ownerID, userA)
+        identity.confirmedUserID = userB; XCTAssertEqual(try core.records(), []); _ = try core.save(Record(module: .todo, rawInput: "明天买牛奶"))
         XCTAssertEqual(try core.records().map(\.rawInput), ["明天买牛奶"])
         identity.confirmedUserID = nil; XCTAssertEqual(try core.records(), []); XCTAssertEqual(store.records.count, 2)
-        identity.confirmedUserID = userA.id; XCTAssertEqual(try core.records().map(\.rawInput), ["沃尔玛16美元"]); XCTAssertEqual(try core.records().first?.ownerID, userA.id)
+        identity.confirmedUserID = userA; XCTAssertEqual(try core.records().map(\.rawInput), ["沃尔玛16美元"]); XCTAssertEqual(try core.records().first?.ownerID, userA)
+        XCTAssertEqual(try core.search(RecordQuery(keyword: "沃尔玛")).map(\.id), [recordA.id])
+        identity.confirmedUserID = userB; XCTAssertThrowsError(try core.save(recordA)) { XCTAssertEqual($0 as? CoreError, .recordNotOwned) }
+        XCTAssertEqual(store.records.count, 2)
     }
+
+#if canImport(AIQuickNote)
+    @MainActor
+    func testMockIdentityRestoreAndSignOutHideWithoutDeletingOwnedRows() async throws {
+        let suite = "IdentityKitTests-\(UUID().uuidString)", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let owner = "fireseed-mock-user-a", record = Record(ownerID: owner, module: .memo, rawInput: "private")
+        let store = MemoryRecordStore([record]), provider = MockAuthProvider(defaults: defaults)
+        let identity = FireseedIdentityKit(provider: provider)
+        try await provider.signIn(); try await identity.restoreSession()
+        XCTAssertEqual(identity.confirmedUserID, owner)
+        let core = QuickNoteCore(store: store, identity: identity)
+        XCTAssertEqual(try core.records(), [record])
+        try await identity.signOut()
+        XCTAssertEqual(try core.records(), [])
+        XCTAssertEqual(store.records, [record])
+        try await identity.restoreSession()
+        XCTAssertEqual(identity.state, .signedOut)
+        XCTAssertEqual(try core.records(), [])
+        try await provider.signIn(); try await identity.restoreSession()
+        XCTAssertEqual(try core.records(), [record])
+    }
+
+    @MainActor
+    func testMockIdentityRejectsUnknownLegacySessionKey() async throws {
+        let suite = "IdentityLegacyTests-\(UUID().uuidString)", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("old-local-owner", forKey: "confirmedUserID")
+        defaults.set("old-provider", forKey: "auth.provider")
+        let identity = FireseedIdentityKit(provider: MockAuthProvider(defaults: defaults))
+        try await identity.restoreSession()
+        XCTAssertEqual(identity.state, .signedOut)
+        XCTAssertEqual(defaults.string(forKey: "confirmedUserID"), "old-local-owner")
+    }
+#endif
 
     func testCurrencyCanonicalizationLocalizationAndLegacyTotals() async throws {
         let parser = DeterministicDraftParser()
@@ -190,20 +234,108 @@ final class CoreTests: XCTestCase {
         let saved = try core.save(linked); XCTAssertTrue(saved.reminderLinked); XCTAssertEqual(saved.reminderExternalID, "mock-reminder-1")
     }
 
-    func testExportZipManifestAndBackupRestoreAreValidatedBeforeReplacement() throws {
-        let user = IdentityUser(id: "owner", provider: .apple, providerSubject: "mock-apple-user-001", displayName: "Test User")
+    func testExportZipAndOwnerMatchedBackupRestore() throws {
         let records = [Record(ownerID: "owner", module: .ledger, rawInput: "Walmart 16 USD", amount: 16, currency: "USD"), Record(ownerID: "owner", module: .todo, rawInput: "Call John", dueAt: Date(), reminderEnabled: true, reminderLinked: true, reminderExternalID: "reminder-1")]
-        let exported = try ExportService.makeExport(records: records, users: [user], exportedAt: Date(timeIntervalSince1970: 0)), entries = try ZipArchive.entries(in: exported)
-        XCTAssertEqual(Set(entries.keys), ["manifest.json", "records.json", "users.json", "metadata.json", "attachments/"])
-        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601; let manifest = try decoder.decode(ExportManifest.self, from: XCTUnwrap(entries["manifest.json"])); XCTAssertEqual(manifest.recordCount, 2); XCTAssertEqual(manifest.userCount, 1); XCTAssertEqual(manifest.attachmentCount, 0)
+        let exported = try ExportService.makeExport(records: records, exportedAt: Date(timeIntervalSince1970: 0)), entries = try ZipArchive.entries(in: exported)
+        XCTAssertEqual(Set(entries.keys), ["manifest.json", "records.json", "metadata.json", "attachments/"])
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601; let manifest = try decoder.decode(ExportManifest.self, from: XCTUnwrap(entries["manifest.json"])); XCTAssertEqual(manifest.recordCount, 2); XCTAssertEqual(manifest.userCount, 0); XCTAssertNil(manifest.ownerID); XCTAssertEqual(manifest.attachmentCount, 0)
         let archiveText = String(decoding: exported, as: UTF8.self); XCTAssertFalse(archiveText.localizedCaseInsensitiveContains("oauth")); XCTAssertFalse(archiveText.localizedCaseInsensitiveContains("password")); XCTAssertFalse(archiveText.localizedCaseInsensitiveContains("token"))
-        let backup = try BackupService.makeBackup(records: records, users: [user], settings: ["theme": "lake-light"]), payload = try BackupService.validateAndRead(backup)
+        let backup = try BackupService.makeBackup(records: records, ownerID: "owner", settings: ["theme": "lake-light"]), payload = try BackupService.validateAndRead(backup)
         XCTAssertEqual(payload.records.map(\.id), records.map(\.id)); XCTAssertEqual(payload.records.map(\.rawInput), records.map(\.rawInput)); XCTAssertEqual(payload.records.last?.reminderExternalID, "reminder-1")
-        XCTAssertEqual(payload.users.map(\.id), [user.id]); XCTAssertEqual(payload.users.first?.provider, .apple); XCTAssertEqual(payload.settings["theme"], "lake-light")
+        XCTAssertEqual(payload.ownerID, "owner"); XCTAssertEqual(payload.settings["theme"], "lake-light")
         let identity = TestIdentity("owner"), store = MemoryRecordStore([Record(ownerID: "owner", module: .memo, rawInput: "existing")]), core = QuickNoteCore(store: store, identity: identity), before = store.records
         XCTAssertThrowsError(try BackupService.validateAndRead(Data("invalid".utf8))); XCTAssertEqual(store.records, before)
         try core.replaceCurrentOwnerRecords(with: payload.records); XCTAssertEqual(try core.records().count, 2)
     }
+
+    func testBackupRejectsForeignMixedLegacyAndUnownedDataWithoutWrites() throws {
+        let identity = TestIdentity("owner"), store = SpyStore(), core = QuickNoteCore(store: store, identity: identity)
+        let current = Record(ownerID: "owner", module: .memo, rawInput: "keep me"); store.records = [current]
+        let before = store.records
+        let foreign = Record(ownerID: "other", module: .memo, rawInput: "foreign")
+        XCTAssertThrowsError(try BackupService.makeBackup(records: [foreign], ownerID: "owner", settings: [:])) { XCTAssertEqual($0 as? ArchiveError, .ownershipMismatch) }
+        let validForeignArchive = try BackupService.makeBackup(records: [foreign], ownerID: "other", settings: [:])
+        XCTAssertThrowsError(try core.replaceCurrentOwnerRecords(with: try BackupService.validateAndRead(validForeignArchive).records)) { XCTAssertEqual($0 as? CoreError, .backupOwnerMismatch) }
+        let mixed = [current, foreign]
+        XCTAssertThrowsError(try BackupService.makeBackup(records: mixed, ownerID: "owner", settings: [:])) { XCTAssertEqual($0 as? ArchiveError, .ownershipMismatch) }
+        let legacy = try ExportService.makeExport(records: [foreign])
+        XCTAssertThrowsError(try BackupService.validateAndRead(legacy)) { XCTAssertEqual($0 as? ArchiveError, .unsupportedSchema) }
+        XCTAssertThrowsError(try core.replaceCurrentOwnerRecords(with: [foreign])) { XCTAssertEqual($0 as? CoreError, .backupOwnerMismatch) }
+        XCTAssertEqual(store.records, before); XCTAssertEqual(store.saveCount, 0)
+    }
+
+    func testBackupRejectsUnmarkedOrExtraEntriesAndEmptyMarker() throws {
+        let record = Record(ownerID: "owner", module: .memo, rawInput: "owned")
+        let valid = try BackupService.makeBackup(records: [record], ownerID: "owner", settings: [:])
+        let entries = try ZipArchive.entries(in: valid)
+        XCTAssertThrowsError(try BackupService.makeBackup(records: [record], ownerID: "", settings: [:])) { XCTAssertEqual($0 as? ArchiveError, .ownershipMismatch) }
+        var extra = entries.map { ($0.key, $0.value) }; extra.append(("users.json", Data()))
+        XCTAssertThrowsError(try BackupService.validateAndRead(ZipArchive.make(extra))) { XCTAssertEqual($0 as? ArchiveError, .invalidArchive) }
+        var malformed = entries
+        var manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(malformed["manifest.json"])) as? [String: Any])
+        manifest["ownerID"] = ""
+        malformed["manifest.json"] = try JSONSerialization.data(withJSONObject: manifest)
+        XCTAssertThrowsError(try BackupService.validateAndRead(ZipArchive.make(malformed.map { ($0.key, $0.value) }))) { XCTAssertEqual($0 as? ArchiveError, .ownershipMismatch) }
+    }
+
+#if canImport(AIQuickNote)
+    @MainActor
+    func testIdentityRestoreAndSignOutKeepRecordsOwnerScoped() async throws {
+        let suite = "IdentityKitTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let userA = FireseedUser(stableUserID: "fireseed-mock-user-a", email: nil, displayName: nil)
+        let provider = MockAuthProvider(defaults: defaults)
+        try await provider.signIn()
+        let store = MemoryRecordStore([Record(ownerID: userA.stableUserID, module: .memo, rawInput: "private draft")])
+        let identity = FireseedIdentityKit(provider: provider)
+        try await identity.restoreSession()
+        let core = QuickNoteCore(store: store, identity: identity)
+        XCTAssertEqual(try core.records().map(\.rawInput), ["private draft"])
+        try await identity.signOut()
+        XCTAssertEqual(try core.records(), [])
+        XCTAssertEqual(store.records.map(\.rawInput), ["private draft"])
+        try await identity.restoreSession()
+        XCTAssertEqual(identity.state, .signedOut)
+    }
+
+    @MainActor
+    func testCanceledFirstSaveCannotBeConsumedByLaterLogin() async {
+        let suite = "IdentityCancelTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let identity = FireseedIdentityKit(provider: MockAuthProvider(defaults: defaults))
+        XCTAssertEqual(identity.state, .resolving)
+        try await identity.restoreSession()
+        XCTAssertEqual(identity.state, .signedOut)
+        // AppModel retains the editable draft in ReviewView; cancel only disarms its one-shot save continuation.
+    }
+
+    @MainActor
+    func testAppModelConsumesPendingSaveOnceAndCancellationDisarmsIt() async throws {
+        let suite = "AppModelIdentityTests-\(UUID().uuidString)", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = SpyStore(), model = AppModel(store: store, defaults: defaults)
+        let draft = Record(module: .memo, rawInput: "pending review")
+        model.saveOrRequestIdentity(draft) {}
+        model.saveOrRequestIdentity(Record(module: .memo, rawInput: "must not replace first")) {}
+        XCTAssertTrue(store.records.isEmpty)
+        model.signIn(); model.signIn()
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(store.records.map(\.rawInput), ["pending review"])
+        XCTAssertEqual(store.records.first?.ownerID, "fireseed-mock-user-a")
+        XCTAssertFalse(model.loginPresented)
+
+        model.signOut()
+        for _ in 0..<20 { await Task.yield() }
+        let canceledStore = SpyStore(), fresh = AppModel(store: canceledStore, defaults: defaults)
+        fresh.saveOrRequestIdentity(Record(module: .memo, rawInput: "canceled draft")) {}
+        fresh.cancelAuthentication()
+        fresh.signIn()
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertTrue(canceledStore.records.isEmpty)
+    }
+#endif
 
     func testMinimalEnglishTodoSearchAndCanonicalCurrencyQueries() async throws {
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(secondsFromGMT: 0)!; let now = Date(timeIntervalSince1970: 1_800_000_000), parser = DeterministicDraftParser(calendar: calendar, now: { now })

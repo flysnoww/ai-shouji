@@ -72,19 +72,32 @@ private struct FallingEffect: View {
     var body: some View { GeometryReader { proxy in ForEach(0..<12, id: \.self) { i in let span = proxy.size.height + 100, start = CGFloat((i * 53) % 100) / 100 * span - 50; Image(uiImage: image).resizable().scaledToFit().frame(width: CGFloat(18 + i % 4 * 7)).opacity(0.55).rotationEffect(.degrees(falling ? Double(120 + i * 13) : Double(i * 17))).position(x: proxy.size.width * CGFloat((i * 37) % 100) / 100, y: falling ? start + span : start - span) } }.allowsHitTesting(false).onAppear { withAnimation(.linear(duration: 9).repeatForever(autoreverses: false)) { falling = true } } }
 }
 
-final class IdentitySession: IdentityGate, ObservableObject, @unchecked Sendable {
-    @Published private(set) var currentUser: IdentityUser?
-    let legacyOwnerID: String?
-    var confirmedUserID: String? { currentUser?.id }
+@MainActor final class FireseedIdentityKit: IdentityGate, ObservableObject {
+    @Published private(set) var state: IdentityState
+    private let provider: any IdentityProvider
+    var currentUser: FireseedUser? { if case .signedIn(let user) = state { user } else { nil } }
+    var confirmedUserID: String? { currentUser?.stableUserID }
     var isAuthenticated: Bool { currentUser != nil }
-    init(defaults: UserDefaults = .standard) {
-        if let data = defaults.data(forKey: "identity.currentUser"), let user = try? JSONDecoder().decode(IdentityUser.self, from: data) { currentUser = user; legacyOwnerID = nil }
-        else if let legacy = defaults.string(forKey: "confirmedUserID") { currentUser = IdentityUser(id: "00000000-0000-4000-8000-000000000101", provider: .apple, providerSubject: "mock-apple-user-001", displayName: "Test User 1", email: "test1@example.invalid", createdAt: Date(timeIntervalSince1970: 0)); legacyOwnerID = legacy; persist(defaults) }
-        else { currentUser = nil; legacyOwnerID = nil }
+
+    init(provider: any IdentityProvider, initialState: IdentityState = .resolving) {
+        self.provider = provider
+        state = initialState
     }
-    func signIn(_ user: IdentityUser, defaults: UserDefaults = .standard) { currentUser = user; persist(defaults) }
-    func signOut(defaults: UserDefaults = .standard) { currentUser = nil; defaults.removeObject(forKey: "identity.currentUser"); defaults.removeObject(forKey: "confirmedUserID") }
-    private func persist(_ defaults: UserDefaults) { if let currentUser, let data = try? JSONEncoder().encode(currentUser) { defaults.set(data, forKey: "identity.currentUser"); defaults.set(currentUser.id, forKey: "confirmedUserID") } }
+
+    func restoreSession() async throws {
+        state = .resolving
+        do { state = try await provider.restoreSession().map { .signedIn($0) } ?? .signedOut }
+        catch { state = .signedOut; throw error }
+    }
+
+    func authenticate() async throws -> FireseedUser { try await provider.signIn() }
+    func accept(_ user: FireseedUser) { state = .signedIn(user) }
+    func resolveSignedOut() { state = .signedOut }
+
+    func signOut() async throws {
+        state = .signedOut
+        try await provider.signOut()
+    }
 }
 
 enum ReminderServiceError: Error { case permissionDenied }
@@ -103,33 +116,112 @@ enum ReminderServiceError: Error { case permissionDenied }
 
 @MainActor final class AppModel: ObservableObject {
     @Published var records: [Record] = []; @Published var error: String?; @Published var loginPresented = false
-    let identity: IdentitySession; let core: QuickNoteCore; let parser = DeterministicDraftParser(); let reminderService = ReminderService()
-    private var pendingSave: Record?; private var pendingSaveCompletion: (() -> Void)?; private var linkingReminderIDs = Set<UUID>()
-    init() {
+    let identity: FireseedIdentityKit; let core: QuickNoteCore; let parser = DeterministicDraftParser(); let reminderService = ReminderService()
+    private struct PendingSave { let id: UUID; let record: Record; let completion: () -> Void }
+    private var pendingSave: PendingSave?
+    private var activeAuthRequestID: UUID?
+    private var authTask: Task<Void, Never>?
+    private var shouldRestoreSession = true
+    private var didRestoreSession = false
+    private var linkingReminderIDs = Set<UUID>()
+
+    init(identityProvider: (any IdentityProvider)? = nil, store suppliedStore: RecordStore? = nil, defaults: UserDefaults = .standard) {
 #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-regression-tests") {
-            let defaults = UserDefaults(suiteName: "AIQuickNote.UIRegression")!
-            let identity = IdentitySession(defaults: defaults)
-            identity.signIn(IdentityUser(id: "ui-test-owner", provider: .apple, providerSubject: "ui-test", displayName: "UI Test"), defaults: defaults)
+            let testDefaults = UserDefaults(suiteName: "AIQuickNote.UIRegression")!
+            let identity = FireseedIdentityKit(provider: identityProvider ?? MockAuthProvider(defaults: testDefaults), initialState: .signedIn(FireseedUser(stableUserID: "ui-test-owner", email: nil, displayName: "UI Test")))
             self.identity = identity
-            core = QuickNoteCore(store: MemoryRecordStore(), identity: identity)
+            core = QuickNoteCore(store: suppliedStore ?? MemoryRecordStore(), identity: identity)
             for index in 0..<25 {
                 let module = index < 22 ? Module.ledger : Module.allCases[index - 21]
                 _ = try? core.save(Record(module: module, rawInput: "UI record \(index)", amount: module == .ledger ? 16 : nil, currency: module == .ledger ? "USD" : nil))
             }
+            shouldRestoreSession = false
             reload()
             return
         }
 #endif
-        let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0], identity = IdentitySession(), store = FileRecordStore(url: folder.appendingPathComponent("records.json")); self.identity = identity; if let old = identity.legacyOwnerID, let new = identity.confirmedUserID, var records = try? store.load(), records.contains(where: { $0.ownerID == old }) { for index in records.indices where records[index].ownerID == old { records[index].ownerID = new }; try? store.save(records) }; core = QuickNoteCore(store: store, identity: identity); reload() }
-    func reload() { do { records = try core.records() } catch { self.error = error.localizedDescription } }
+        let account = ProcessInfo.processInfo.arguments.contains("--identity-test-user-b") ? 2 : 1
+        let provider = identityProvider ?? MockAuthProvider(account: account, defaults: defaults)
+        let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let identity = FireseedIdentityKit(provider: provider)
+        self.identity = identity
+        core = QuickNoteCore(store: suppliedStore ?? FileRecordStore(url: folder.appendingPathComponent("records.json")), identity: identity)
+    }
+
+    func restoreSession() async {
+        guard shouldRestoreSession, !didRestoreSession, identity.state == .resolving else { return }
+        didRestoreSession = true
+        do { try await identity.restoreSession() }
+        catch { error = "无法恢复本地测试身份。"; identity.resolveSignedOut() }
+        reload()
+        if let pendingSave {
+            if identity.isAuthenticated { consumePendingSave(pendingSave.id) }
+            else { loginPresented = true }
+        }
+    }
+
+    func reload() { guard identity.state != .resolving else { records = []; return }; do { records = try core.records() } catch { self.error = error.localizedDescription } }
     func save(_ value: Record) throws { var value = value; if value.reminderEnabled, value.reminderState == .none { value.reminderState = .requested }; let saved = try core.save(value); reload(); if saved.reminderEnabled, !saved.reminderLinked, linkingReminderIDs.insert(saved.id).inserted { Task { await linkReminder(saved) } } }
-    func saveOrRequestIdentity(_ value: Record, onSaved: @escaping () -> Void) { do { try save(value); onSaved() } catch CoreError.identityRequired { pendingSave = value; pendingSaveCompletion = onSaved; loginPresented = true } catch { self.error = error.localizedDescription } }
-    func signedIn(_ user: IdentityUser) { identity.signIn(user); loginPresented = false; reload(); guard let value = pendingSave else { return }; pendingSave = nil; do { try save(value); let completion = pendingSaveCompletion; pendingSaveCompletion = nil; completion?() } catch { self.error = error.localizedDescription } }
-    func signOut() { identity.signOut(); pendingSave = nil; pendingSaveCompletion = nil; reload() }
-    func exportData() throws -> Data { try ExportService.makeExport(records: records, users: identity.currentUser.map { [$0] } ?? []) }
-    func backupData() throws -> Data { try BackupService.makeBackup(records: records, users: identity.currentUser.map { [$0] } ?? [], settings: ["theme": "lake-light"]) }
-    func restoreBackup(_ data: Data) throws { let payload = try BackupService.validateAndRead(data); try core.replaceCurrentOwnerRecords(with: payload.records); reload() }
+    func saveOrRequestIdentity(_ value: Record, onSaved: @escaping () -> Void) {
+        if identity.isAuthenticated { do { try save(value); onSaved() } catch { self.error = error.localizedDescription }; return }
+        guard pendingSave == nil else { return }
+        pendingSave = PendingSave(id: UUID(), record: value, completion: onSaved)
+        if identity.state == .signedOut { loginPresented = true }
+    }
+
+    func signIn() {
+        guard activeAuthRequestID == nil else { return }
+        let requestID = UUID(); activeAuthRequestID = requestID
+        authTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let user = try await identity.authenticate()
+                guard activeAuthRequestID == requestID else { return }
+                activeAuthRequestID = nil; authTask = nil
+                identity.accept(user); loginPresented = false; reload()
+                if let pendingSave { consumePendingSave(pendingSave.id) }
+            } catch is CancellationError {
+                guard activeAuthRequestID == requestID else { return }
+                activeAuthRequestID = nil; authTask = nil; pendingSave = nil; loginPresented = false
+            } catch {
+                guard activeAuthRequestID == requestID else { return }
+                activeAuthRequestID = nil; authTask = nil; pendingSave = nil; loginPresented = false
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    private func consumePendingSave(_ id: UUID) {
+        guard let operation = pendingSave, operation.id == id else { return }
+        pendingSave = nil
+        do { try save(operation.record); operation.completion() }
+        catch { self.error = error.localizedDescription }
+    }
+
+    func cancelAuthentication() {
+        authTask?.cancel(); authTask = nil; activeAuthRequestID = nil
+        pendingSave = nil; loginPresented = false
+    }
+
+    func signOut() {
+        cancelAuthentication(); records = []; identity.resolveSignedOut()
+        Task { do { try await identity.signOut() } catch { self.error = "退出登录失败。" }; reload() }
+    }
+
+    func exportData() throws -> Data {
+        guard identity.isAuthenticated else { throw CoreError.identityRequired }
+        return try ExportService.makeExport(records: records)
+    }
+    func backupData() throws -> Data {
+        guard let ownerID = identity.confirmedUserID else { throw CoreError.identityRequired }
+        return try BackupService.makeBackup(records: records, ownerID: ownerID, settings: ["theme": "lake-light"])
+    }
+    func restoreBackup(_ data: Data) throws {
+        let payload = try BackupService.validateAndRead(data)
+        guard payload.ownerID == identity.confirmedUserID else { throw CoreError.backupOwnerMismatch }
+        try core.replaceCurrentOwnerRecords(with: payload.records); reload()
+    }
     func reconcileReminder(_ value: Record) -> Record { guard value.reminderState == .active, let id = value.reminderExternalID, !reminderService.exists(id) else { return value }; var missing = value; missing.reminderLinked = false; missing.reminderState = .missingExternalReminder; return missing }
     private func linkReminder(_ saved: Record) async {
         defer { linkingReminderIDs.remove(saved.id) }
@@ -152,25 +244,35 @@ enum ReminderServiceError: Error { case permissionDenied }
 
 struct RootView: View {
     @EnvironmentObject private var model: AppModel; @Environment(\.openURL) private var openURL
-    var body: some View { NavigationStack { HomeView() }.tint(AppTheme.accent).sheet(isPresented: $model.loginPresented) { LoginView(onSignedIn: model.signedIn) }.alert("操作失败", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { if model.error?.contains("权限已关闭") == true { Button("前往设置") { if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) } } }; Button("确定") {} } message: { Text(LocalizedStringKey(model.error ?? "未知错误")) } }
+    var body: some View { NavigationStack { HomeView() }.tint(AppTheme.accent).sheet(isPresented: $model.loginPresented, onDismiss: { model.cancelAuthentication() }) { LoginView(onSignIn: model.signIn, onCancel: model.cancelAuthentication) }.task { await model.restoreSession() }.alert("操作失败", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { if model.error?.contains("权限已关闭") == true { Button("前往设置") { if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) } } }; Button("确定") {} } message: { Text(LocalizedStringKey(model.error ?? "未知错误")) } }
 }
 
 struct LoginView: View {
-    @Environment(\.dismiss) private var dismiss; @State private var selected: IdentityProvider?; let onSignedIn: (IdentityUser) -> Void
-    var body: some View { NavigationStack { ZStack { LakeBackground(); ScrollView { VStack(spacing: 16) { Image(systemName: "person.crop.circle.badge.checkmark").font(.system(size: 58)).foregroundStyle(.blue); Text("登录 AI随手记").font(.largeTitle.bold()); Text("登录只用于确认本地数据归属。\n登录不会自动上传、备份或分享你的记录。").multilineTextAlignment(.center).foregroundStyle(.secondary); if let provider = selected { Text("\(provider == .x ? "X" : provider.rawValue.capitalized) 登录（开发测试）").font(.title3.bold()).padding(.top); ForEach(1...2, id: \.self) { account in Button("Test User \(account)") { signIn(provider, account) }.buttonStyle(.borderedProminent).controlSize(.large) }; Button("选择其他登录方式") { selected = nil }.buttonStyle(.borderless) } else { ForEach(IdentityProvider.allCases, id: \.self) { provider in Button { selected = provider } label: { Text("Continue with \(provider == .x ? "X" : provider.rawValue.capitalized)").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent).controlSize(.large).tint(provider == .apple ? .black : .blue) } }; Text("当前为开发测试登录，尚未连接真实第三方账号。").font(.caption).foregroundStyle(.secondary).padding(.top, 8) }.padding(24).background(.white.opacity(0.78), in: RoundedRectangle(cornerRadius: 30)).padding(20) } }.navigationTitle("身份确认").navigationBarTitleDisplayMode(.inline).toolbar { Button("取消") { dismiss() } } } }
-    private func signIn(_ provider: IdentityProvider, _ account: Int) { Task { guard let user = try? await MockAuthProvider(provider).signIn(account: account) else { return }; await MainActor.run { onSignedIn(user); dismiss() } } }
+    @Environment(\.dismiss) private var dismiss
+    let onSignIn: () -> Void
+    let onCancel: () -> Void
+    var body: some View {
+        NavigationStack {
+            ZStack { LakeBackground(); VStack(spacing: 16) {
+                Image(systemName: "person.crop.circle.badge.checkmark").font(.system(size: 58)).foregroundStyle(.blue)
+                Text("登录 AI随手记").font(.largeTitle.bold())
+                Text("登录只用于确认本地数据归属。\n登录不会自动上传、备份或分享你的记录。").multilineTextAlignment(.center).foregroundStyle(.secondary)
+                Button("继续（本地测试身份）", action: onSignIn).buttonStyle(.borderedProminent).controlSize(.large)
+                Text("当前为本地测试身份；真实 Identity provider 将在后续阶段接入。").font(.caption).foregroundStyle(.secondary)
+            }.padding(24).background(.white.opacity(0.78), in: RoundedRectangle(cornerRadius: 30)).padding(20) }
+            .navigationTitle("身份确认").navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button("取消") { onCancel(); dismiss() } }
+        }
+    }
 }
 
 struct AccountView: View {
     @EnvironmentObject private var model: AppModel; @Environment(\.dismiss) private var dismiss
-    var body: some View { NavigationStack { ZStack { LakeBackground(); if let user = model.identity.currentUser { VStack(spacing: 14) { Image(systemName: "person.crop.circle.fill").font(.system(size: 72)).foregroundStyle(.blue); Text(user.displayName).font(.title.bold()); Text(user.provider == .x ? "X" : user.provider.rawValue.capitalized).foregroundStyle(.secondary); if let email = user.email { Text(email).foregroundStyle(.secondary) }
+    var body: some View { NavigationStack { ZStack { LakeBackground(); if let user = model.identity.currentUser { VStack(spacing: 14) { Image(systemName: "person.crop.circle.fill").font(.system(size: 72)).foregroundStyle(.blue); Text(user.displayName ?? "Fireseed User").font(.title.bold()); if let email = user.email { Text(email).foregroundStyle(.secondary) }
 #if DEBUG
-                    Text("ownerID …\(user.id.suffix(8))").font(.caption.monospaced()).foregroundStyle(.secondary)
+                    Text("ownerID …\(user.stableUserID.suffix(8))").font(.caption.monospaced()).foregroundStyle(.secondary)
 #endif
                     Text("身份仅用于本地数据归属，不会自动备份、上传或分享。").multilineTextAlignment(.center).font(.footnote).foregroundStyle(.secondary).padding(); Button("退出登录", role: .destructive) { model.signOut(); dismiss() }.buttonStyle(.borderedProminent)
-#if DEBUG
-                    Button("切换测试用户") { model.signOut(); dismiss(); model.loginPresented = true }.buttonStyle(.bordered)
-#endif
                 }.padding(26).background(.white.opacity(0.78), in: RoundedRectangle(cornerRadius: 30)).padding() } }.navigationTitle("账号").navigationBarTitleDisplayMode(.inline).toolbar { Button("完成") { dismiss() } } } }
 }
 
@@ -187,7 +289,7 @@ struct DataDocument: FileDocument {
 
 struct DataBackupView: View {
     @EnvironmentObject private var model: AppModel; @State private var document: DataDocument?; @State private var exporting = false; @State private var importing = false; @State private var restoreConfirmation = false; @State private var pendingRestore: Data?; @State private var filename = ""; @State private var contentType = UTType.zip
-    var body: some View { Form { Section("Data") { Button("Export Data") { prepareExport() }; Button("Backup Now") { prepareBackup() }; Button("Restore Backup") { importing = true } }; Section("System Integration") { LabeledContent { Text(LocalizedStringKey(model.reminderService.statusText)) } label: { Text("Reminders Permission / Status") } }; Section { Text("导出与备份只包含当前登录用户的本地记录和身份元数据，不包含密码、token 或 Keychain secrets。").font(.footnote).foregroundStyle(.secondary) } }.navigationTitle("设置").fileExporter(isPresented: $exporting, document: document, contentType: contentType, defaultFilename: filename) { if case .failure(let error) = $0 { model.error = error.localizedDescription } }.fileImporter(isPresented: $importing, allowedContentTypes: [backupContentType, .data]) { result in do { let url = try result.get(), scoped = url.startAccessingSecurityScopedResource(); defer { if scoped { url.stopAccessingSecurityScopedResource() } }; pendingRestore = try Data(contentsOf: url); _ = try BackupService.validateAndRead(pendingRestore!); restoreConfirmation = true } catch { model.error = "备份文件无效，现有数据未更改。" } }.confirmationDialog("恢复备份会覆盖当前登录用户的本地记录", isPresented: $restoreConfirmation, titleVisibility: .visible) { Button("覆盖并恢复", role: .destructive) { guard let pendingRestore else { return }; do { try model.restoreBackup(pendingRestore) } catch { model.error = "恢复失败，现有数据未更改。" } }; Button("取消", role: .cancel) {} } }
+    var body: some View { Form { Section("Data") { Button("Export Data") { prepareExport() }; Button("Backup Now") { prepareBackup() }; Button("Restore Backup") { importing = true } }; Section("System Integration") { LabeledContent { Text(LocalizedStringKey(model.reminderService.statusText)) } label: { Text("Reminders Permission / Status") } }; Section { Text("导出与备份只包含当前登录用户的本地记录；登录不会自动备份或分享。").font(.footnote).foregroundStyle(.secondary) } }.navigationTitle("设置").fileExporter(isPresented: $exporting, document: document, contentType: contentType, defaultFilename: filename) { if case .failure(let error) = $0 { model.error = error.localizedDescription } }.fileImporter(isPresented: $importing, allowedContentTypes: [backupContentType, .data]) { result in do { let url = try result.get(), scoped = url.startAccessingSecurityScopedResource(); defer { if scoped { url.stopAccessingSecurityScopedResource() } }; pendingRestore = try Data(contentsOf: url); _ = try BackupService.validateAndRead(pendingRestore!); restoreConfirmation = true } catch ArchiveError.unsupportedSchema { model.error = "旧版或未标记所有者的备份不能直接恢复；现有数据未更改。" } catch ArchiveError.ownershipMismatch { model.error = "备份所有权校验失败；现有数据未更改。" } catch { model.error = "备份文件无效，现有数据未更改。" } }.confirmationDialog("恢复备份会覆盖当前登录用户的本地记录", isPresented: $restoreConfirmation, titleVisibility: .visible) { Button("覆盖并恢复", role: .destructive) { guard let pendingRestore else { return }; do { try model.restoreBackup(pendingRestore) } catch CoreError.backupOwnerMismatch { model.error = "备份不属于当前登录用户；现有数据未更改。" } catch { model.error = "恢复失败，现有数据未更改。" } }; Button("取消", role: .cancel) {} } }
     private var dateStamp: String { let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"; return formatter.string(from: Date()) }
     private func prepareExport() { do { document = DataDocument(try model.exportData()); filename = "AIQuickNote-Export-\(dateStamp).zip"; contentType = .zip; exporting = true } catch { model.error = error.localizedDescription } }
     private func prepareBackup() { do { document = DataDocument(try model.backupData()); filename = "AIQuickNote-Backup-\(dateStamp).aiqnbackup"; contentType = backupContentType; exporting = true } catch { model.error = error.localizedDescription } }
@@ -197,7 +299,7 @@ struct SettingsView: View {
     @EnvironmentObject private var model: AppModel; @Environment(\.dismiss) private var dismiss; @Environment(\.openURL) private var openURL
     @AppStorage("language.display") private var displayLanguage = DisplayLanguage.system.rawValue; @AppStorage("language.speech") private var speechLanguage = SpeechInputLanguage.simplifiedChinese.rawValue
     var body: some View { NavigationStack { Form {
-        Section("Account") { if let user = model.identity.currentUser { LabeledContent("用户名", value: user.displayName); LabeledContent("身份", value: user.provider == .x ? "X" : user.provider.rawValue.capitalized); Button("退出登录", role: .destructive) { model.signOut(); dismiss() } } else { Text("未登录"); Button("登录") { dismiss(); model.loginPresented = true } } }
+        Section("Account") { if let user = model.identity.currentUser { LabeledContent("用户名", value: user.displayName ?? "Fireseed User"); Button("退出登录", role: .destructive) { model.signOut(); dismiss() } } else { Text("未登录"); Button("登录") { dismiss(); model.loginPresented = true } } }
         Section("Language") { Picker("Display Language", selection: $displayLanguage) { ForEach(DisplayLanguage.allCases, id: \.rawValue) { Text($0.title).tag($0.rawValue) } }; Picker("Speech Input Language", selection: $speechLanguage) { ForEach(SpeechInputLanguage.allCases, id: \.rawValue) { Text($0.title).tag($0.rawValue) } } }
         Section("Appearance & Skins") { NavigationLink("外观与皮肤") { SkinSettingsView() } }
         Section("Data & Backup") { NavigationLink("导出、备份与恢复") { DataBackupView() } }
@@ -239,7 +341,7 @@ struct HomeView: View {
     @EnvironmentObject private var model: AppModel; @Environment(\.locale) private var locale; @Environment(\.scenePhase) private var scenePhase; @StateObject private var speech = SpeechInput()
     @State private var text = ""; @State private var draft: Record?; @State private var followingDrafts: [Record] = []; @State private var query: RecordQuery?; @State private var attachmentMenu = false; @State private var photos = false; @State private var camera = false; @State private var accountPresented = false; @State private var photo: PhotosPickerItem?; @FocusState private var focused: AppFocus?
     var body: some View {
-        ScrollView { VStack(alignment: .leading, spacing: 12) { ZStack(alignment: .topTrailing) { VStack(alignment: .leading, spacing: 6) { Text("AI 随手记").font(.system(size: 38, weight: .bold)).foregroundStyle(AppTheme.primary); Text("记录生活，交给 AI 处理 ✨").font(.title3).foregroundStyle(.blue.opacity(0.68)); Spacer().frame(height: 12); Text(AppLocalization.homeDate(.now, locale: locale)).font(.headline).foregroundStyle(AppTheme.primary); Text("今天也值得被好好记录 ☀️").foregroundStyle(.blue.opacity(0.62)) }.frame(maxWidth: .infinity, alignment: .leading); VStack(alignment: .trailing, spacing: 12) { Button { if model.identity.isAuthenticated { accountPresented = true } else { model.loginPresented = true } } label: { VStack(spacing: 2) { Image(systemName: model.identity.isAuthenticated ? "person.fill.checkmark" : "person.fill").font(.title2); if !model.identity.isAuthenticated { Text("登录").font(.caption2) } }.foregroundStyle(.blue.opacity(0.7)).frame(width: 58, height: 58).background(.white.opacity(0.76), in: Circle()).overlay(Circle().stroke(.white.opacity(0.9))) }; Text("让每一个\n平凡的瞬间\n都有意义。").font(.callout.italic()).multilineTextAlignment(.trailing).foregroundStyle(.indigo.opacity(0.72)).rotationEffect(.degrees(-5)) } }.padding(.horizontal, 4); LazyVGrid(columns: [.init(.flexible()), .init(.flexible())], spacing: 14) { ForEach(Module.allCases) { module in ModuleCard(module: module, records: model.records.filter { $0.module == module }).simultaneousGesture(TapGesture().onEnded { focused = nil }) } } }.padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 10).background(Color.clear.contentShape(Rectangle()).onTapGesture { focused = nil }) }.scrollDismissesKeyboard(.interactively)
+        ScrollView { VStack(alignment: .leading, spacing: 12) { ZStack(alignment: .topTrailing) { VStack(alignment: .leading, spacing: 6) { Text("AI 随手记").font(.system(size: 38, weight: .bold)).foregroundStyle(AppTheme.primary); Text("记录生活，交给 AI 处理 ✨").font(.title3).foregroundStyle(.blue.opacity(0.68)); Spacer().frame(height: 12); Text(AppLocalization.homeDate(.now, locale: locale)).font(.headline).foregroundStyle(AppTheme.primary); Text("今天也值得被好好记录 ☀️").foregroundStyle(.blue.opacity(0.62)) }.frame(maxWidth: .infinity, alignment: .leading); VStack(alignment: .trailing, spacing: 12) { Button { if model.identity.isAuthenticated { accountPresented = true } else if model.identity.state == .signedOut { model.loginPresented = true } } label: { VStack(spacing: 2) { Image(systemName: model.identity.isAuthenticated ? "person.fill.checkmark" : "person.fill").font(.title2); if !model.identity.isAuthenticated { Text("登录").font(.caption2) } }.foregroundStyle(.blue.opacity(0.7)).frame(width: 58, height: 58).background(.white.opacity(0.76), in: Circle()).overlay(Circle().stroke(.white.opacity(0.9))) }; Text("让每一个\n平凡的瞬间\n都有意义。").font(.callout.italic()).multilineTextAlignment(.trailing).foregroundStyle(.indigo.opacity(0.72)).rotationEffect(.degrees(-5)) } }.padding(.horizontal, 4); LazyVGrid(columns: [.init(.flexible()), .init(.flexible())], spacing: 14) { ForEach(Module.allCases) { module in ModuleCard(module: module, records: model.records.filter { $0.module == module }).simultaneousGesture(TapGesture().onEnded { focused = nil }) } } }.padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 10).background(Color.clear.contentShape(Rectangle()).onTapGesture { focused = nil }) }.scrollDismissesKeyboard(.interactively)
             .background(LakeBackground()).safeAreaInset(edge: .bottom) { captureBar }.toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: Module.self) { ModuleListView(module: $0) }.navigationDestination(item: $draft) { ReviewView(draft: $0, followingDrafts: followingDrafts) { text = ""; followingDrafts = []; draft = nil } }
             .navigationDestination(isPresented: Binding(get: { query != nil }, set: { if !$0 { query = nil } })) { SearchView(initialQuery: query ?? RecordQuery()) }
@@ -315,10 +417,10 @@ struct ModuleCard: View {
 }
 
 struct ReviewView: View {
-    @EnvironmentObject private var model: AppModel; @Environment(\.dismiss) private var dismiss; @Environment(\.scenePhase) private var scenePhase; @StateObject private var speech = SpeechInput(); @State var draft: Record; @State private var remaining: [Record]; @State private var searchQuery: RecordQuery?; @State private var voicePrefix = ""; let onSaved: () -> Void
+    @EnvironmentObject private var model: AppModel; @Environment(\.dismiss) private var dismiss; @Environment(\.scenePhase) private var scenePhase; @StateObject private var speech = SpeechInput(); @State var draft: Record; @State private var remaining: [Record]; @State private var searchQuery: RecordQuery?; @State private var voicePrefix = ""; @State private var saveRequestID: UUID?; let onSaved: () -> Void
     init(draft: Record, followingDrafts: [Record] = [], onSaved: @escaping () -> Void) { _draft = State(initialValue: draft); _remaining = State(initialValue: followingDrafts); self.onSaved = onSaved }
     var body: some View { RecordForm(record: $draft, showRawInput: true, saveTitle: "确认保存", onSave: save, onSearch: search, onReparse: { reparse() }, onVoice: toggleVoice, isRecording: speech.isRecording, voiceLabel: speech.statusText).navigationTitle("确认记录").navigationBarTitleDisplayMode(.inline).navigationDestination(isPresented: Binding(get: { searchQuery != nil }, set: { if !$0 { searchQuery = nil } })) { SearchView(initialQuery: searchQuery ?? RecordQuery()) }.task(id: draft.rawInput) { try? await Task.sleep(for: .milliseconds(400)); guard !Task.isCancelled else { return }; await parseCurrentInput() }.onChange(of: speech.transcript) { let value = $0.trimmed; guard !value.isEmpty else { return }; draft.rawInput = [voicePrefix, value].filter { !$0.isEmpty }.joined(separator: "，") }.onChange(of: speech.error) { if let value = $0 { model.error = value } }.onDisappear { speech.cancel() }.onChange(of: scenePhase) { if $0 != .active { speech.cancel() } } }
-    private func save(_ value: Record) { model.saveOrRequestIdentity(value) { if remaining.isEmpty { onSaved(); dismiss() } else { draft = remaining.removeFirst() } } }
+    private func save(_ value: Record) { let requestID = UUID(); saveRequestID = requestID; model.saveOrRequestIdentity(value) { guard saveRequestID == requestID else { return }; saveRequestID = nil; if remaining.isEmpty { onSaved(); dismiss() } else { draft = remaining.removeFirst() } } }
     private func search(_ value: Record) { draft = value; searchQuery = RecordQuery(keyword: value.merchant ?? value.paymentMethod ?? value.content, modules: [value.module], importantOnly: value.important, tags: value.tags) }
     private func reparse() { Task { await parseCurrentInput() } }
     private func toggleVoice() { if speech.isRecording { speech.stop() } else { voicePrefix = draft.rawInput.trimmed; speech.start() } }
@@ -343,7 +445,7 @@ struct SearchView: View {
         searchCard("自动总额", "sum", .blue) { if totalKeys.isEmpty { Text("—").font(.title.bold()).foregroundStyle(.secondary) } else { LazyVGrid(columns: [.init(.flexible()), .init(.flexible())], spacing: 10) { ForEach(totalKeys, id: \.self) { key in HStack { VStack(alignment: .leading, spacing: 5) { Text(CurrencyCanonicalizer.displayName(key, languageCode: appLanguageCode) ?? key).font(.caption).foregroundStyle(.secondary); Text(String(describing: totals[key] ?? 0)).font(.title2.bold()).foregroundStyle(.blue) }; Spacer(); Image(systemName: "banknote.fill").foregroundStyle(Color.blue.opacity(0.35)) }.padding(14).background(Color.blue.opacity(0.09), in: RoundedRectangle(cornerRadius: 18)) } } } }
         searchCard("查询条件", "slider.horizontal.3", .purple) { HStack { Image(systemName: "magnifyingglass").foregroundStyle(.secondary); TextField("关键词", text: $keyword).focused($focused, equals: .searchInput).submitLabel(.search).onSubmit { focused = nil; currentPage = 0; search() }; if !keyword.isEmpty { Button { keyword = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) } } }.padding(15).background(.white.opacity(0.68), in: RoundedRectangle(cornerRadius: 20)); LazyVGrid(columns: [.init(.flexible()), .init(.flexible())], spacing: 9) { ForEach(Module.allCases) { module in Button { if modules.contains(module) { modules.remove(module) } else { modules.insert(module) } } label: { Label(LocalizedStringKey(module.title), systemImage: module.icon).frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent).tint(modules.contains(module) ? module.color : .gray.opacity(0.22)) } }; Toggle("重要", isOn: $important).padding(13).background(.white.opacity(0.48), in: RoundedRectangle(cornerRadius: 16)); if dateStart != nil || minimumAmount != nil || maximumAmount != nil || category != nil || !tags.isEmpty { Text(filterSummary).font(.caption).foregroundStyle(.secondary) } }
         searchCard(AppLocalization.resultCount(results.count, locale: locale), "list.bullet", .indigo) { LazyVStack(spacing: 10) { pageControls; ForEach(currentPageResults) { record in Button { focused = nil; selectedRecord = record } label: { SearchResultRow(record: record, currency: RecordQuery(keyword: keyword, currency: currency).effectiveCurrency).padding(.horizontal, 12).contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityIdentifier("record.\(record.id.uuidString)").background(.white.opacity(0.58), in: RoundedRectangle(cornerRadius: 18)).overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(0.8))) }; pageControls } }
-    }.padding(16).background(Color.clear.contentShape(Rectangle()).onTapGesture { focused = nil }) }.scrollDismissesKeyboard(.interactively).background(LakeBackground(lightweight: true)).navigationTitle("搜索").navigationBarTitleDisplayMode(.inline).sheet(item: $selectedRecord) { record in DetailSheet(record: record) }.onAppear { focused = nil; search(); currentPage = Pagination.clampedPage(currentPage, itemCount: results.count) }.onDisappear { focused = nil }.task(id: keyword) { try? await Task.sleep(for: .milliseconds(250)); guard !Task.isCancelled, keyword != lastSearchedKeyword else { return }; lastSearchedKeyword = keyword; currentPage = 0; search() }.onChange(of: modules) { currentPage = 0; search() }.onChange(of: important) { currentPage = 0; search() }.toolbar { ToolbarItem(placement: .topBarTrailing) { Button { focused = nil; sharePresented = true } label: { Label("分享摘要", systemImage: "square.and.arrow.up") }.disabled(results.isEmpty) }; ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("完成") { focused = nil } } }.sheet(isPresented: $sharePresented) { ShareOptionsView(records: currentPageResults, pageLabel: pageLabel) } }
+    }.padding(16).background(Color.clear.contentShape(Rectangle()).onTapGesture { focused = nil }) }.scrollDismissesKeyboard(.interactively).background(LakeBackground(lightweight: true)).navigationTitle("搜索").navigationBarTitleDisplayMode(.inline).sheet(item: $selectedRecord) { record in DetailSheet(record: record) }.onAppear { focused = nil; search(); currentPage = Pagination.clampedPage(currentPage, itemCount: results.count) }.onDisappear { focused = nil }.task(id: keyword) { try? await Task.sleep(for: .milliseconds(250)); guard !Task.isCancelled, keyword != lastSearchedKeyword else { return }; lastSearchedKeyword = keyword; currentPage = 0; search() }.onChange(of: modules) { currentPage = 0; search() }.onChange(of: important) { currentPage = 0; search() }.onChange(of: model.records) { currentPage = 0; search() }.toolbar { ToolbarItem(placement: .topBarTrailing) { Button { focused = nil; sharePresented = true } label: { Label("分享摘要", systemImage: "square.and.arrow.up") }.disabled(results.isEmpty) }; ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("完成") { focused = nil } } }.sheet(isPresented: $sharePresented) { ShareOptionsView(records: currentPageResults, pageLabel: pageLabel) } }
     private var totalKeys: [String] { totals.keys.sorted() }
     private var pageCount: Int { Pagination.pageCount(itemCount: results.count) }; private var currentPageResults: [Record] { Pagination.page(results, index: currentPage) }; private var pageLabel: String { "Page \(currentPage + 1) / \(pageCount)" }
     private var pageControls: some View { VStack(spacing: 7) { HStack { Button { currentPage -= 1 } label: { Image(systemName: "chevron.left") }.disabled(currentPage == 0); Spacer(); Text("\(currentPage + 1) / \(pageCount)").font(.subheadline.monospacedDigit()).accessibilityIdentifier("search.page"); Spacer(); Button { currentPage += 1 } label: { Image(systemName: "chevron.right") }.disabled(currentPage + 1 >= pageCount) }; ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 7) { ForEach(0..<pageCount, id: \.self) { page in Button("\(page + 1)") { currentPage = page }.accessibilityIdentifier("search.page.\(page + 1)").buttonStyle(.borderedProminent).tint(page == currentPage ? .blue : .gray.opacity(0.28)).disabled(page == currentPage) } } } }.padding(.vertical, 4) }
@@ -355,6 +457,8 @@ struct SearchView: View {
 struct SearchResultRow: View { let record: Record; var currency: String? = nil; var body: some View { HStack(spacing: 12) { Image(systemName: record.module.icon).foregroundStyle(record.module.color).frame(width: 42, height: 42).background(record.module.color.opacity(0.12), in: RoundedRectangle(cornerRadius: 12)); VStack(alignment: .leading, spacing: 4) { Text(record.content).font(.headline).lineLimit(1); Text(record.rawInput).font(.caption).foregroundStyle(.secondary).lineLimit(1); HStack { Text(LocalizedStringKey(record.module.title)); ForEach(record.tags.prefix(2), id: \.self) { Text($0) } }.font(.caption2).foregroundStyle(record.module.color) }; Spacer(); VStack(alignment: .trailing) { Text(record.occurredAt ?? record.createdAt, style: .date).font(.caption).foregroundStyle(.secondary); ForEach(record.amountItems.filter { currency == nil || $0.currency == currency }.prefix(3), id: \.self) { Text("\(CurrencyCanonicalizer.displayName($0.currency, languageCode: appLanguageCode) ?? "") \($0.value)").font(.headline).foregroundStyle(.blue) } }; Image(systemName: "chevron.right").foregroundStyle(.secondary) }.padding(.vertical, 12).frame(maxWidth: .infinity).contentShape(Rectangle()) } }
 
 struct DetailSheet: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
     let record: Record
     var body: some View {
         NavigationStack { DetailView(record: record) }
@@ -364,6 +468,9 @@ struct DetailSheet: View {
             .presentationBackground(.regularMaterial)
             .presentationBackgroundInteraction(.disabled)
             .presentationContentInteraction(.scrolls)
+            .onChange(of: model.records) {
+                guard model.records.contains(where: { $0.id == record.id && $0.ownerID == record.ownerID }) else { dismiss(); return }
+            }
     }
 }
 
@@ -374,7 +481,7 @@ struct DetailView: View {
     private var shareText: String { [record.content, record.rawInput == record.content ? nil : record.rawInput].compactMap { $0 }.joined(separator: "\n\n") }
     private func save(_ value: Record) { do { try model.save(value); record = value } catch { model.error = error.localizedDescription } }
     private func saveAndDismiss(_ value: Record) { do { try model.save(value); record = value; dismiss() } catch { model.error = error.localizedDescription } }
-    private func export() { do { exportDocument = DataDocument(try ExportService.makeExport(records: [record], users: model.identity.currentUser.map { [$0] } ?? [])); exporting = true } catch { model.error = error.localizedDescription } }
+    private func export() { do { exportDocument = DataDocument(try ExportService.makeExport(records: [record])); exporting = true } catch { model.error = error.localizedDescription } }
     private func reparseAndSave() async { let raw = record.rawInput.trimmed; guard !raw.isEmpty else { return }; do { if case .create(var parsed) = try await model.parser.parse(raw) { parsed.id = record.id; parsed.ownerID = record.ownerID; parsed.createdAt = record.createdAt; parsed.important = record.important; lastParsedRaw = raw; save(parsed) } } catch { model.error = "重新解析失败，已保留当前记录。" } }
 }
 
