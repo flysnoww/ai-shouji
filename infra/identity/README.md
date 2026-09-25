@@ -40,6 +40,16 @@ No app client or end-user provider flow is configured by this local foundation. 
 
 `stop` retains identity data. `smoke` checks Postgres/Logto/Admin/OIDC, writes a temporary marker to the LOCAL identity database, restarts Postgres and Logto, verifies the marker survived, then removes it. `reset` requires typing `RESET`, deletes the Compose project's LOCAL named PostgreSQL volume, and starts a fresh database. It permanently deletes local test identities in that volume.
 
+## Verified Windows runtime (2026-09-25)
+
+- Docker Desktop 4.92.0, Linux engine 29.8.0, Compose v5.5.1; WSL 2.7.14 with Ubuntu running as WSL 2.
+- Logto OSS 1.43.0 completed seed/migrations and passed its health check; PostgreSQL image `postgres:17-alpine` ran PostgreSQL 17.11 and stayed healthy.
+- Windows reserves host TCP ports 3001/3002. This machine's ignored `.env` uses loopback ports 3301/3302 instead; PostgreSQL has no host port mapping. Other hosts can keep the documented 3001/3002 defaults.
+- Verified `start`, `health`, `smoke`, ordinary `stop`/`start` persistence, and `reset`. The smoke marker survived PostgreSQL/Logto restarts and was removed. Stop/start retained the named volume and all 79 application tables. Reset replaced that local volume and returned both services to healthy running state.
+- Runtime fixes: the health check accepts the Admin Console's expected 302 redirect; the PowerShell Compose wrapper forwards native flags; local endpoint parsing reads the correct regex capture; and the temporary smoke table enables RLS so Logto can restart safely.
+- No Admin Console operator or end-user account was created. No app client or email/social provider is configured, so end-user authentication is not yet tested; persistence was verified with the temporary database marker. No AIQuickNote data is present.
+- The first image pull coincided with a full Windows system drive and Docker reported read-only/content I/O errors. After freeing space and re-pulling the same pinned Logto image, its Node runtime (v22.23.2) and the service started normally.
+
 ## Providers and current limits
 
 Email verification-code delivery requires an email connector and working mail service. Apple and Google require provider-side applications and credentials. None are supplied or tested here. The Sign-in experience must disable automatic account linking by email/phone. Logto still presents a manual link-or-create option in a duplicate-email social-registration flow; its public docs do not establish that this branch performs the required recent verification. Do not expose production sign-up until this is checked against the pinned Logto version. Future IdentityKit linking should use the signed-in Account API flow with fresh verification of both the existing account and the new provider identity.

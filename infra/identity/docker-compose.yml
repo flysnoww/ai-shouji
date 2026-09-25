@@ -32,7 +32,7 @@ services:
       - "127.0.0.1:${LOGTO_PORT:-3001}:3001"
       - "127.0.0.1:${LOGTO_ADMIN_PORT:-3002}:3002"
     healthcheck:
-      test: ["CMD", "node", "-e", "Promise.all([fetch('http://127.0.0.1:3001/oidc/.well-known/openid-configuration'),fetch('http://127.0.0.1:3002')]).then(rs=>process.exit(rs.every(r=>r.ok)?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "Promise.all([fetch('http://127.0.0.1:3001/oidc/.well-known/openid-configuration'),fetch('http://127.0.0.1:3002',{redirect:'manual'})]).then(rs=>process.exit(rs.every(r=>r.status<400)?0:1)).catch(()=>process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 30

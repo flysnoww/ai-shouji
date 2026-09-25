@@ -10,7 +10,7 @@ $ComposeFile = Join-Path $IdentityRoot "docker-compose.yml"
 $EnvFile = Join-Path $IdentityRoot ".env"
 
 function Invoke-Compose {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$ComposeArgs)
+    $ComposeArgs = $args
     & docker compose --env-file $EnvFile -f $ComposeFile @ComposeArgs
     if ($LASTEXITCODE -ne 0) { throw "docker compose failed with exit code $LASTEXITCODE" }
 }
@@ -27,7 +27,7 @@ function Assert-LocalEnvironment {
 
 function Get-LocalValue([string]$Name, [string]$Default) {
     $match = [regex]::Match((Get-Content -LiteralPath $EnvFile -Raw), "(?m)^$([regex]::Escape($Name))=(.*)$")
-    if ($match.Success -and $match.Groups[2].Value.Trim()) { return $match.Groups[2].Value.Trim() }
+    if ($match.Success -and $match.Groups[1].Value.Trim()) { return $match.Groups[1].Value.Trim() }
     return $Default
 }
 
@@ -64,7 +64,7 @@ switch ($Action) {
         $marker = [guid]::NewGuid().ToString("N")
         $dbUser = Get-LocalValue "POSTGRES_USER" "logto"
         $dbName = Get-LocalValue "POSTGRES_DB" "logto"
-        Invoke-Compose exec -T postgres psql -U $dbUser -d $dbName -v ON_ERROR_STOP=1 -c "CREATE TABLE IF NOT EXISTS public.fireseed_identity_smoke (id text PRIMARY KEY); INSERT INTO public.fireseed_identity_smoke VALUES ('$marker');"
+        Invoke-Compose exec -T postgres psql -U $dbUser -d $dbName -v ON_ERROR_STOP=1 -c "CREATE TABLE IF NOT EXISTS public.fireseed_identity_smoke (id text PRIMARY KEY); ALTER TABLE public.fireseed_identity_smoke ENABLE ROW LEVEL SECURITY; INSERT INTO public.fireseed_identity_smoke VALUES ('$marker');"
         Invoke-Compose restart postgres
         $ready = $false
         for ($attempt = 0; $attempt -lt 30; $attempt++) {
