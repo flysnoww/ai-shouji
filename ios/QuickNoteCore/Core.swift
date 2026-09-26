@@ -468,8 +468,9 @@ public enum BackupService {
     }
     public static func validateAndRead(_ archive: Data) throws -> BackupPayload {
         let entries = try ZipArchive.entries(in: archive); let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-        guard let manifestData = entries["manifest.json"], let recordsData = entries["records.json"], let settingsData = entries["settings.json"] else { throw ArchiveError.invalidArchive }
+        guard let manifestData = entries["manifest.json"], let recordsData = entries["records.json"] else { throw ArchiveError.invalidArchive }
         let manifest = try decoder.decode(ExportManifest.self, from: manifestData); guard manifest.schemaVersion == 2 else { throw ArchiveError.unsupportedSchema }
+        guard let settingsData = entries["settings.json"] else { throw ArchiveError.invalidArchive }
         guard Set(entries.keys) == Set(["manifest.json", "records.json", "metadata.json", "attachments/", "settings.json"]), entries["users.json"] == nil else { throw ArchiveError.invalidArchive }
         guard let ownerID = manifest.ownerID, !ownerID.isEmpty else { throw ArchiveError.ownershipMismatch }
         let records = try decoder.decode([Record].self, from: recordsData), settings = try decoder.decode([String: String].self, from: settingsData)
