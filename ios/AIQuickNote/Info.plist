@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.fireseed.aiquicknote</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.fireseed.aiquicknote</string>
+			</array>
+		</dict>
+	</array>
+	<key>FireseedIdentityEnvironment</key>
+	<string>$(FIRESEED_IDENTITY_ENVIRONMENT)</string>
+	<key>FireseedIdentityIssuer</key>
+	<string>$(FIRESEED_IDENTITY_ISSUER)</string>
+	<key>FireseedIdentityEndpoint</key>
+	<string>$(FIRESEED_IDENTITY_ENDPOINT)</string>
+	<key>FireseedIdentityClientID</key>
+	<string>$(FIRESEED_IDENTITY_CLIENT_ID)</string>
+	<key>FireseedIdentityRedirectURI</key>
+	<string>$(FIRESEED_IDENTITY_REDIRECT_URI)</string>
+	<key>FireseedIdentityPostLogoutRedirectURI</key>
+	<string>$(FIRESEED_IDENTITY_POST_LOGOUT_REDIRECT_URI)</string>
+</dict>
+</plist>

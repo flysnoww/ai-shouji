@@ -2,8 +2,16 @@ import Foundation
 
 struct FireseedUser: Codable, Equatable, Sendable {
     let stableUserID: String
+    let issuer: String?
     let email: String?
     let displayName: String?
+
+    init(stableUserID: String, issuer: String? = nil, email: String?, displayName: String?) {
+        self.stableUserID = stableUserID
+        self.issuer = issuer
+        self.email = email
+        self.displayName = displayName
+    }
 }
 
 enum IdentityState: Equatable {
@@ -16,6 +24,12 @@ enum IdentityState: Equatable {
     func restoreSession() async throws -> FireseedUser?
     func signIn() async throws -> FireseedUser
     func signOut() async throws
+}
+
+enum IdentityProviderError: Error {
+    case notConfigured
+    case authenticationFailed
+    case signOutFailed
 }
 
 @MainActor final class MockAuthProvider: IdentityProvider {

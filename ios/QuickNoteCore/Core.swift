@@ -42,6 +42,7 @@ public enum ReminderState: String, Codable, Sendable { case none, requested, act
 public struct Record: Identifiable, Codable, Hashable, Sendable {
     public var id: UUID
     public var ownerID: String
+    public var ownerIssuer: String?
     public var module: Module
     public var rawInput: String
     public var content: String
@@ -64,12 +65,12 @@ public struct Record: Identifiable, Codable, Hashable, Sendable {
     public var location: String?
     public var status: TodoStatus?
 
-    public init(id: UUID = UUID(), ownerID: String = "", module: Module, rawInput: String, content: String? = nil,
+    public init(id: UUID = UUID(), ownerID: String = "", ownerIssuer: String? = nil, module: Module, rawInput: String, content: String? = nil,
                 important: Bool = false, tags: [String] = [], createdAt: Date = Date(), updatedAt: Date = Date(),
                 merchant: String? = nil, amount: Decimal? = nil, currency: String? = nil, amountItems: [AmountItem] = [], category: String? = nil,
                 paymentMethod: String? = nil, occurredAt: Date? = nil, dueAt: Date? = nil,
                 reminderEnabled: Bool = false, reminderLinked: Bool = false, reminderExternalID: String? = nil, reminderState: ReminderState? = nil, location: String? = nil, status: TodoStatus? = nil) {
-        self.id = id; self.ownerID = ownerID; self.module = module; self.rawInput = rawInput
+        self.id = id; self.ownerID = ownerID; self.ownerIssuer = ownerIssuer; self.module = module; self.rawInput = rawInput
         self.content = content ?? rawInput; self.important = important; self.tags = tags
         self.createdAt = createdAt; self.updatedAt = updatedAt; self.merchant = merchant; self.amount = amount
         self.currency = CurrencyCanonicalizer.canonical(currency); self.amountItems = amountItems.isEmpty ? amount.map { [AmountItem(value: $0, currency: currency)] } ?? [] : amountItems.map { AmountItem(value: $0.value, currency: $0.currency) }; self.category = category; self.paymentMethod = paymentMethod
@@ -77,8 +78,8 @@ public struct Record: Identifiable, Codable, Hashable, Sendable {
         self.location = location; self.status = status
     }
 
-    private enum CodingKeys: String, CodingKey { case id, ownerID, module, rawInput, content, important, tags, createdAt, updatedAt, merchant, amount, currency, amountItems, category, paymentMethod, occurredAt, dueAt, reminderEnabled, reminderLinked, reminderExternalID, reminderState, location, status }
-    public init(from decoder: Decoder) throws { let box = try decoder.container(keyedBy: CodingKeys.self); let legacyAmount = try box.decodeIfPresent(Decimal.self, forKey: .amount), legacyCurrency = CurrencyCanonicalizer.canonical(try box.decodeIfPresent(String.self, forKey: .currency)); id = try box.decode(UUID.self, forKey: .id); ownerID = try box.decode(String.self, forKey: .ownerID); module = try box.decode(Module.self, forKey: .module); rawInput = try box.decode(String.self, forKey: .rawInput); content = try box.decode(String.self, forKey: .content); important = try box.decode(Bool.self, forKey: .important); tags = try box.decode([String].self, forKey: .tags); createdAt = try box.decode(Date.self, forKey: .createdAt); updatedAt = try box.decode(Date.self, forKey: .updatedAt); merchant = try box.decodeIfPresent(String.self, forKey: .merchant); amount = legacyAmount; currency = legacyCurrency; amountItems = try box.decodeIfPresent([AmountItem].self, forKey: .amountItems) ?? legacyAmount.map { [AmountItem(value: $0, currency: legacyCurrency)] } ?? []; category = try box.decodeIfPresent(String.self, forKey: .category); paymentMethod = try box.decodeIfPresent(String.self, forKey: .paymentMethod); occurredAt = try box.decodeIfPresent(Date.self, forKey: .occurredAt); dueAt = try box.decodeIfPresent(Date.self, forKey: .dueAt); reminderEnabled = try box.decode(Bool.self, forKey: .reminderEnabled); reminderLinked = try box.decodeIfPresent(Bool.self, forKey: .reminderLinked) ?? false; reminderExternalID = try box.decodeIfPresent(String.self, forKey: .reminderExternalID); reminderState = try box.decodeIfPresent(ReminderState.self, forKey: .reminderState) ?? (reminderLinked ? .active : reminderEnabled ? .requested : .none); location = try box.decodeIfPresent(String.self, forKey: .location); status = try box.decodeIfPresent(TodoStatus.self, forKey: .status) }
+    private enum CodingKeys: String, CodingKey { case id, ownerID, ownerIssuer, module, rawInput, content, important, tags, createdAt, updatedAt, merchant, amount, currency, amountItems, category, paymentMethod, occurredAt, dueAt, reminderEnabled, reminderLinked, reminderExternalID, reminderState, location, status }
+    public init(from decoder: Decoder) throws { let box = try decoder.container(keyedBy: CodingKeys.self); let legacyAmount = try box.decodeIfPresent(Decimal.self, forKey: .amount), legacyCurrency = CurrencyCanonicalizer.canonical(try box.decodeIfPresent(String.self, forKey: .currency)); id = try box.decode(UUID.self, forKey: .id); ownerID = try box.decode(String.self, forKey: .ownerID); ownerIssuer = try box.decodeIfPresent(String.self, forKey: .ownerIssuer); module = try box.decode(Module.self, forKey: .module); rawInput = try box.decode(String.self, forKey: .rawInput); content = try box.decode(String.self, forKey: .content); important = try box.decode(Bool.self, forKey: .important); tags = try box.decode([String].self, forKey: .tags); createdAt = try box.decode(Date.self, forKey: .createdAt); updatedAt = try box.decode(Date.self, forKey: .updatedAt); merchant = try box.decodeIfPresent(String.self, forKey: .merchant); amount = legacyAmount; currency = legacyCurrency; amountItems = try box.decodeIfPresent([AmountItem].self, forKey: .amountItems) ?? legacyAmount.map { [AmountItem(value: $0, currency: legacyCurrency)] } ?? []; category = try box.decodeIfPresent(String.self, forKey: .category); paymentMethod = try box.decodeIfPresent(String.self, forKey: .paymentMethod); occurredAt = try box.decodeIfPresent(Date.self, forKey: .occurredAt); dueAt = try box.decodeIfPresent(Date.self, forKey: .dueAt); reminderEnabled = try box.decode(Bool.self, forKey: .reminderEnabled); reminderLinked = try box.decodeIfPresent(Bool.self, forKey: .reminderLinked) ?? false; reminderExternalID = try box.decodeIfPresent(String.self, forKey: .reminderExternalID); reminderState = try box.decodeIfPresent(ReminderState.self, forKey: .reminderState) ?? (reminderLinked ? .active : reminderEnabled ? .requested : .none); location = try box.decodeIfPresent(String.self, forKey: .location); status = try box.decodeIfPresent(TodoStatus.self, forKey: .status) }
 }
 
 public struct RecordQuery: Sendable, Equatable {
@@ -106,7 +107,8 @@ public enum Pagination {
     public static func clampedPage(_ index: Int, itemCount: Int, size: Int = 10) -> Int { min(max(0, index), pageCount(itemCount: itemCount, size: size) - 1) }
 }
 
-public protocol IdentityGate: Sendable { var confirmedUserID: String? { get } }
+public protocol IdentityGate: Sendable { var confirmedUserID: String? { get }; var confirmedIssuer: String? { get } }
+public extension IdentityGate { var confirmedIssuer: String? { nil } }
 public enum ParsedInput: Sendable, Equatable {
     case create(Record)
     case search(RecordQuery)
@@ -313,10 +315,11 @@ public final class QuickNoteCore: @unchecked Sendable {
     @discardableResult public func save(_ draft: Record) throws -> Record {
         guard let ownerID = identity.confirmedUserID else { throw CoreError.identityRequired }
         guard !draft.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CoreError.emptyContent }
+        let ownerIssuer = identity.confirmedIssuer
         var records = try store.load(), value = draft
-        value.ownerID = ownerID
-        guard !records.contains(where: { $0.id == value.id && $0.ownerID != ownerID }) else { throw CoreError.recordNotOwned }
-        if let index = records.firstIndex(where: { $0.id == value.id && $0.ownerID == ownerID }) {
+        value.ownerID = ownerID; value.ownerIssuer = ownerIssuer
+        guard !records.contains(where: { $0.id == value.id && ($0.ownerID != ownerID || $0.ownerIssuer != ownerIssuer) }) else { throw CoreError.recordNotOwned }
+        if let index = records.firstIndex(where: { $0.id == value.id && $0.ownerID == ownerID && $0.ownerIssuer == ownerIssuer }) {
             value.createdAt = records[index].createdAt
             value = normalizeForModule(value); value.updatedAt = records[index].updatedAt
             guard value != records[index] else { return records[index] }
@@ -353,7 +356,8 @@ public final class QuickNoteCore: @unchecked Sendable {
 
     public func records(module: Module? = nil) throws -> [Record] {
         guard let ownerID = identity.confirmedUserID else { return [] }
-        return try store.load().filter { $0.ownerID == ownerID && (module == nil || $0.module == module) }.sorted { ($0.occurredAt ?? $0.createdAt) > ($1.occurredAt ?? $1.createdAt) }
+        let ownerIssuer = identity.confirmedIssuer
+        return try store.load().filter { $0.ownerID == ownerID && $0.ownerIssuer == ownerIssuer && (module == nil || $0.module == module) }.sorted { ($0.occurredAt ?? $0.createdAt) > ($1.occurredAt ?? $1.createdAt) }
     }
 
     public func search(_ query: RecordQuery) throws -> [Record] { Self.search(query, in: try records()) }
@@ -387,8 +391,9 @@ public final class QuickNoteCore: @unchecked Sendable {
 
     public func replaceCurrentOwnerRecords(with restored: [Record]) throws {
         guard let ownerID = identity.confirmedUserID else { throw CoreError.identityRequired }
-        guard restored.allSatisfy({ $0.ownerID == ownerID }) else { throw CoreError.backupOwnerMismatch }
-        var all = try store.load().filter { $0.ownerID != ownerID }
+        let ownerIssuer = identity.confirmedIssuer
+        guard restored.allSatisfy({ $0.ownerID == ownerID && $0.ownerIssuer == ownerIssuer }) else { throw CoreError.backupOwnerMismatch }
+        var all = try store.load().filter { $0.ownerID != ownerID || $0.ownerIssuer != ownerIssuer }
         all += restored.map { normalizeForModule($0) }
         try store.save(all)
     }
@@ -402,6 +407,7 @@ public struct ExportManifest: Codable, Equatable, Sendable {
     public var userCount: Int
     public var attachmentCount: Int
     public var ownerID: String?
+    public var ownerIssuer: String?
 }
 
 public struct ExportMetadata: Codable, Equatable, Sendable {
@@ -415,6 +421,7 @@ public struct BackupPayload: Equatable, Sendable {
     public var records: [Record]
     public var settings: [String: String]
     public var ownerID: String
+    public var ownerIssuer: String?
 }
 
 public enum ArchiveError: Error, Equatable { case invalidArchive, unsupportedSchema, ownershipMismatch }
@@ -451,9 +458,9 @@ public enum ExportService {
     public static func makeExport(records: [Record], appVersion: String = "0.1", locale: String = Locale.current.identifier, timezone: String = TimeZone.current.identifier, exportedAt: Date = Date()) throws -> Data {
         try archive(records: records, ownerID: nil, settings: nil, schemaVersion: 1, appVersion: appVersion, locale: locale, timezone: timezone, exportedAt: exportedAt)
     }
-    static func archive(records: [Record], ownerID: String?, settings: [String: String]?, schemaVersion: Int, appVersion: String, locale: String, timezone: String, exportedAt: Date) throws -> Data {
+    static func archive(records: [Record], ownerID: String?, ownerIssuer: String? = nil, settings: [String: String]?, schemaVersion: Int, appVersion: String, locale: String, timezone: String, exportedAt: Date) throws -> Data {
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601; encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let manifest = ExportManifest(schemaVersion: schemaVersion, appVersion: appVersion, exportedAt: exportedAt, recordCount: records.count, userCount: 0, attachmentCount: 0, ownerID: ownerID)
+        let manifest = ExportManifest(schemaVersion: schemaVersion, appVersion: appVersion, exportedAt: exportedAt, recordCount: records.count, userCount: 0, attachmentCount: 0, ownerID: ownerID, ownerIssuer: ownerIssuer)
         let metadata = ExportMetadata(locale: locale, timezone: timezone, currencyCanonicalizationVersion: 1, modules: Module.allCases.map(\.rawValue))
         var entries = [("manifest.json", try encoder.encode(manifest)), ("records.json", try encoder.encode(records)), ("metadata.json", try encoder.encode(metadata)), ("attachments/", Data())]
         if let settings { entries.append(("settings.json", try encoder.encode(settings))) }
@@ -462,21 +469,23 @@ public enum ExportService {
 }
 
 public enum BackupService {
-    public static func makeBackup(records: [Record], ownerID: String, settings: [String: String], appVersion: String = "0.1") throws -> Data {
-        guard !ownerID.isEmpty, records.allSatisfy({ $0.ownerID == ownerID }) else { throw ArchiveError.ownershipMismatch }
-        return try ExportService.archive(records: records, ownerID: ownerID, settings: settings, schemaVersion: 2, appVersion: appVersion, locale: Locale.current.identifier, timezone: TimeZone.current.identifier, exportedAt: Date())
+    public static func makeBackup(records: [Record], ownerID: String, ownerIssuer: String? = nil, settings: [String: String], appVersion: String = "0.1") throws -> Data {
+        guard !ownerID.isEmpty, records.allSatisfy({ $0.ownerID == ownerID && $0.ownerIssuer == ownerIssuer }) else { throw ArchiveError.ownershipMismatch }
+        let version = ownerIssuer == nil ? 2 : 3
+        return try ExportService.archive(records: records, ownerID: ownerID, ownerIssuer: ownerIssuer, settings: settings, schemaVersion: version, appVersion: appVersion, locale: Locale.current.identifier, timezone: TimeZone.current.identifier, exportedAt: Date())
     }
     public static func validateAndRead(_ archive: Data) throws -> BackupPayload {
         let entries = try ZipArchive.entries(in: archive); let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         guard let manifestData = entries["manifest.json"], let recordsData = entries["records.json"] else { throw ArchiveError.invalidArchive }
-        let manifest = try decoder.decode(ExportManifest.self, from: manifestData); guard manifest.schemaVersion == 2 else { throw ArchiveError.unsupportedSchema }
+        let manifest = try decoder.decode(ExportManifest.self, from: manifestData); guard [2, 3].contains(manifest.schemaVersion) else { throw ArchiveError.unsupportedSchema }
         guard let settingsData = entries["settings.json"] else { throw ArchiveError.invalidArchive }
         guard Set(entries.keys) == Set(["manifest.json", "records.json", "metadata.json", "attachments/", "settings.json"]), entries["users.json"] == nil else { throw ArchiveError.invalidArchive }
         guard let ownerID = manifest.ownerID, !ownerID.isEmpty else { throw ArchiveError.ownershipMismatch }
+        guard (manifest.schemaVersion == 2 && manifest.ownerIssuer == nil) || (manifest.schemaVersion == 3 && !(manifest.ownerIssuer ?? "").isEmpty) else { throw ArchiveError.ownershipMismatch }
         let records = try decoder.decode([Record].self, from: recordsData), settings = try decoder.decode([String: String].self, from: settingsData)
         guard manifest.recordCount == records.count, manifest.userCount == 0 else { throw ArchiveError.invalidArchive }
-        guard records.allSatisfy({ $0.ownerID == ownerID }) else { throw ArchiveError.ownershipMismatch }
-        return BackupPayload(records: records, settings: settings, ownerID: ownerID)
+        guard records.allSatisfy({ $0.ownerID == ownerID && $0.ownerIssuer == manifest.ownerIssuer }) else { throw ArchiveError.ownershipMismatch }
+        return BackupPayload(records: records, settings: settings, ownerID: ownerID, ownerIssuer: manifest.ownerIssuer)
     }
 }
 

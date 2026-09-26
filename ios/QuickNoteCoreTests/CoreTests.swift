@@ -3,9 +3,10 @@ import XCTest
 @testable import QuickNoteCore
 #elseif canImport(AIQuickNote)
 @testable import AIQuickNote
+import AuthenticationServices
 #endif
 
-private final class TestIdentity: IdentityGate, @unchecked Sendable { var confirmedUserID: String?; init(_ id: String?) { confirmedUserID = id } }
+private final class TestIdentity: IdentityGate, @unchecked Sendable { var confirmedUserID: String?; var confirmedIssuer: String?; init(_ id: String?, issuer: String? = nil) { confirmedUserID = id; confirmedIssuer = issuer } }
 private final class SpyStore: RecordStore, @unchecked Sendable {
     var records: [Record] = []; var saveCount = 0
     func load() -> [Record] { records }
@@ -278,6 +279,25 @@ final class CoreTests: XCTestCase {
         XCTAssertThrowsError(try BackupService.validateAndRead(ZipArchive.make(malformed.map { ($0.key, $0.value) }))) { XCTAssertEqual($0 as? ArchiveError, .ownershipMismatch) }
     }
 
+    func testIssuerAndSubjectTogetherScopeRecordsAndBackup() throws {
+        let subject = "same-opaque-subject", issuerA = "https://identity-a.example/oidc", issuerB = "https://identity-b.example/oidc"
+        let store = MemoryRecordStore(), coreA = QuickNoteCore(store: store, identity: TestIdentity(subject, issuer: issuerA))
+        let coreB = QuickNoteCore(store: store, identity: TestIdentity(subject, issuer: issuerB))
+        let record = try coreA.save(Record(module: .memo, rawInput: "issuer A private"))
+        XCTAssertEqual(record.ownerID, subject); XCTAssertEqual(record.ownerIssuer, issuerA)
+        XCTAssertEqual(try coreA.records().map(\.rawInput), ["issuer A private"]); XCTAssertEqual(try coreB.records(), [])
+        XCTAssertThrowsError(try coreB.save(record)) { XCTAssertEqual($0 as? CoreError, .recordNotOwned) }
+
+        let archive = try BackupService.makeBackup(records: [record], ownerID: subject, ownerIssuer: issuerA, settings: [:])
+        let payload = try BackupService.validateAndRead(archive)
+        XCTAssertEqual(payload.ownerID, subject); XCTAssertEqual(payload.ownerIssuer, issuerA)
+        let before = store.records
+        XCTAssertThrowsError(try coreB.replaceCurrentOwnerRecords(with: payload.records)) { XCTAssertEqual($0 as? CoreError, .backupOwnerMismatch) }
+        XCTAssertEqual(store.records, before)
+        let manifest = try JSONDecoder().decode(ExportManifest.self, from: XCTUnwrap(ZipArchive.entries(in: archive)["manifest.json"]))
+        XCTAssertEqual(manifest.schemaVersion, 3); XCTAssertEqual(manifest.ownerIssuer, issuerA)
+    }
+
 #if canImport(AIQuickNote)
     @MainActor
     func testIdentityRestoreAndSignOutKeepRecordsOwnerScoped() async throws {
@@ -315,7 +335,7 @@ final class CoreTests: XCTestCase {
     func testAppModelConsumesPendingSaveOnceAndCancellationDisarmsIt() async throws {
         let suite = "AppModelIdentityTests-\(UUID().uuidString)", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let store = SpyStore(), model = AppModel(store: store, defaults: defaults)
+        let store = SpyStore(), model = AppModel(identityProvider: MockAuthProvider(defaults: defaults), store: store, defaults: defaults)
         let draft = Record(module: .memo, rawInput: "pending review")
         model.saveOrRequestIdentity(draft) {}
         model.saveOrRequestIdentity(Record(module: .memo, rawInput: "must not replace first")) {}
@@ -328,12 +348,33 @@ final class CoreTests: XCTestCase {
 
         model.signOut()
         for _ in 0..<20 { await Task.yield() }
-        let canceledStore = SpyStore(), fresh = AppModel(store: canceledStore, defaults: defaults)
+        let canceledStore = SpyStore(), fresh = AppModel(identityProvider: MockAuthProvider(defaults: defaults), store: canceledStore, defaults: defaults)
         fresh.saveOrRequestIdentity(Record(module: .memo, rawInput: "canceled draft")) {}
         fresh.cancelAuthentication()
         fresh.signIn()
         for _ in 0..<20 { await Task.yield() }
         XCTAssertTrue(canceledStore.records.isEmpty)
+    }
+
+    @MainActor
+    func testRealProviderSelectionConfigurationClaimsAndCancellation() throws {
+        let localInfo: [String: Any] = [
+            "FireseedIdentityEnvironment": "LOCAL", "FireseedIdentityIssuer": "http://127.0.0.1:3301/oidc",
+            "FireseedIdentityEndpoint": "http://127.0.0.1:3301", "FireseedIdentityClientID": "",
+            "FireseedIdentityRedirectURI": "com.fireseed.aiquicknote://oauth/callback",
+            "FireseedIdentityPostLogoutRedirectURI": "com.fireseed.aiquicknote://oauth/signed-out"
+        ]
+        XCTAssertTrue(AppModel.defaultIdentityProvider(info: localInfo) is LogtoIdentityProvider)
+        XCTAssertFalse(try XCTUnwrap(IdentityProviderConfiguration(info: localInfo)).isUsable)
+        let withClient = localInfo.merging(["FireseedIdentityClientID": "native-public-client"]) { _, value in value }
+        XCTAssertTrue(try XCTUnwrap(IdentityProviderConfiguration(info: withClient)).isUsable)
+        let user = try LogtoIdentityProvider.user(subject: "opaque-sub", issuer: "http://127.0.0.1:3301/oidc", expectedIssuer: "http://127.0.0.1:3301/oidc", email: "person@example.invalid", emailVerified: true, displayName: "Person")
+        XCTAssertEqual(user.stableUserID, "opaque-sub"); XCTAssertEqual(user.issuer, "http://127.0.0.1:3301/oidc"); XCTAssertEqual(user.email, "person@example.invalid")
+        let unverified = try LogtoIdentityProvider.user(subject: user.stableUserID, issuer: user.issuer, expectedIssuer: user.issuer!, email: "person@example.invalid", emailVerified: false, displayName: nil)
+        XCTAssertNil(unverified.email)
+        XCTAssertThrowsError(try LogtoIdentityProvider.user(subject: user.stableUserID, issuer: "https://other.example/oidc", expectedIssuer: user.issuer!, email: nil, emailVerified: nil, displayName: nil))
+        let canceled = NSError(domain: ASWebAuthenticationSessionError.errorDomain, code: ASWebAuthenticationSessionError.Code.canceledLogin.rawValue)
+        XCTAssertTrue(LogtoIdentityProvider.isUserCancelled(canceled))
     }
 #endif
 

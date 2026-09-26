@@ -77,6 +77,7 @@ private struct FallingEffect: View {
     private let provider: any IdentityProvider
     var currentUser: FireseedUser? { if case .signedIn(let user) = state { user } else { nil } }
     var confirmedUserID: String? { currentUser?.stableUserID }
+    var confirmedIssuer: String? { currentUser?.issuer }
     var isAuthenticated: Bool { currentUser != nil }
 
     init(provider: any IdentityProvider, initialState: IdentityState = .resolving) {
@@ -146,19 +147,22 @@ enum ReminderServiceError: Error { case permissionDenied }
             return
         }
 #endif
-        let account = ProcessInfo.processInfo.arguments.contains("--identity-test-user-b") ? 2 : 1
-        let provider = identityProvider ?? MockAuthProvider(account: account, defaults: defaults)
+        let provider = identityProvider ?? Self.defaultIdentityProvider()
         let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let identity = FireseedIdentityKit(provider: provider)
         self.identity = identity
         core = QuickNoteCore(store: suppliedStore ?? FileRecordStore(url: folder.appendingPathComponent("records.json")), identity: identity)
     }
 
+    static func defaultIdentityProvider(info: [String: Any] = Bundle.main.infoDictionary ?? [:]) -> any IdentityProvider {
+        LogtoIdentityProvider(configuration: .bundle(info))
+    }
+
     func restoreSession() async {
         guard shouldRestoreSession, !didRestoreSession, identity.state == .resolving else { return }
         didRestoreSession = true
         do { try await identity.restoreSession() }
-        catch { self.error = "无法恢复本地测试身份。"; identity.resolveSignedOut() }
+        catch { self.error = "无法恢复登录状态；本地记录仍保持隔离，请检查网络后重试。"; identity.resolveSignedOut() }
         reload()
         if let pendingSave {
             if identity.isAuthenticated { consumePendingSave(pendingSave.id) }
@@ -192,7 +196,11 @@ enum ReminderServiceError: Error { case permissionDenied }
             } catch {
                 guard activeAuthRequestID == requestID else { return }
                 activeAuthRequestID = nil; authTask = nil; pendingSave = nil; loginPresented = false
-                self.error = error.localizedDescription
+                if error is IdentityProviderError {
+                    self.error = "登录未完成，请检查 Identity 配置或网络后重试。"
+                } else {
+                    self.error = error.localizedDescription
+                }
             }
         }
     }
@@ -220,11 +228,11 @@ enum ReminderServiceError: Error { case permissionDenied }
     }
     func backupData() throws -> Data {
         guard let ownerID = identity.confirmedUserID else { throw CoreError.identityRequired }
-        return try BackupService.makeBackup(records: records, ownerID: ownerID, settings: ["theme": "lake-light"])
+        return try BackupService.makeBackup(records: records, ownerID: ownerID, ownerIssuer: identity.confirmedIssuer, settings: ["theme": "lake-light"])
     }
     func restoreBackup(_ data: Data) throws {
         let payload = try BackupService.validateAndRead(data)
-        guard payload.ownerID == identity.confirmedUserID else { throw CoreError.backupOwnerMismatch }
+        guard payload.ownerID == identity.confirmedUserID, payload.ownerIssuer == identity.confirmedIssuer else { throw CoreError.backupOwnerMismatch }
         try core.replaceCurrentOwnerRecords(with: payload.records); reload()
     }
     func reconcileReminder(_ value: Record) -> Record { guard value.reminderState == .active, let id = value.reminderExternalID, !reminderService.exists(id) else { return value }; var missing = value; missing.reminderLinked = false; missing.reminderState = .missingExternalReminder; return missing }
@@ -262,8 +270,7 @@ struct LoginView: View {
                 Image(systemName: "person.crop.circle.badge.checkmark").font(.system(size: 58)).foregroundStyle(.blue)
                 Text("登录 AI随手记").font(.largeTitle.bold())
                 Text("登录只用于确认本地数据归属。\n登录不会自动上传、备份或分享你的记录。").multilineTextAlignment(.center).foregroundStyle(.secondary)
-                Button("继续（本地测试身份）", action: onSignIn).buttonStyle(.borderedProminent).controlSize(.large).accessibilityIdentifier("identity.login.confirm")
-                Text("当前为本地测试身份；真实 Identity provider 将在后续阶段接入。").font(.caption).foregroundStyle(.secondary)
+                Button("继续登录", action: onSignIn).buttonStyle(.borderedProminent).controlSize(.large).accessibilityIdentifier("identity.login.confirm")
             }.padding(24).background(.white.opacity(0.78), in: RoundedRectangle(cornerRadius: 30)).padding(20) }
             .navigationTitle("身份确认").navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("取消") { onCancel(); dismiss() }.accessibilityIdentifier("identity.login.cancel") }
@@ -274,9 +281,6 @@ struct LoginView: View {
 struct AccountView: View {
     @EnvironmentObject private var model: AppModel; @Environment(\.dismiss) private var dismiss
     var body: some View { NavigationStack { ZStack { LakeBackground(); if let user = model.identity.currentUser { VStack(spacing: 14) { Image(systemName: "person.crop.circle.fill").font(.system(size: 72)).foregroundStyle(.blue); Text(user.displayName ?? "Fireseed User").font(.title.bold()); if let email = user.email { Text(email).foregroundStyle(.secondary) }
-#if DEBUG
-                    Text("ownerID …\(user.stableUserID.suffix(8))").font(.caption.monospaced()).foregroundStyle(.secondary)
-#endif
                     Text("身份仅用于本地数据归属，不会自动备份、上传或分享。").multilineTextAlignment(.center).font(.footnote).foregroundStyle(.secondary).padding(); Button("退出登录", role: .destructive) { model.signOut(); dismiss() }.buttonStyle(.borderedProminent)
                 }.padding(26).background(.white.opacity(0.78), in: RoundedRectangle(cornerRadius: 30)).padding() } }.navigationTitle("账号").navigationBarTitleDisplayMode(.inline).toolbar { Button("完成") { dismiss() } } } }
 }

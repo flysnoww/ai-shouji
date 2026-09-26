@@ -1,8 +1,8 @@
 # Fireseed Identity V1 Development Spec
 
-Status: Phase 2 in progress; local identity infrastructure and test mail sink only. No end-user authentication loop is verified yet.
-Baseline: `34c85b4c0e8150e25ff0f77d07ceed103a35dd8a` (AIQuickNote V1 UI regression candidate).
-Last upstream review: 2026-09-23.
+Status: Phase 3C provider integration implemented; native CI and local-device OIDC validation pending.
+Baseline: `cb4ed8fd161effa17c1dedf094c4b181663c64fc` (frozen Phase 3B).
+Last upstream review: 2026-09-25.
 
 ## Goals
 
@@ -13,7 +13,7 @@ Last upstream review: 2026-09-23.
 
 ## Non-goals
 
-No production authentication integration, cloud deployment, staging environment, app record migration, backup/sync changes, custom auth server, phone/SMS auth, password sign-in, organizations, RBAC, or app-specific authorization.
+No cloud deployment, production credentials, app record migration UI, sync, custom auth server, phone/SMS auth, password sign-in, organizations, RBAC, or app-specific authorization. The app provider boundary is implemented; only LOCAL has defaults.
 
 ## Frozen principles
 
@@ -38,7 +38,7 @@ The upstream OSS Compose file is explicitly demonstration-only; this repository 
 
 ## Canonical user ID
 
-Use the OIDC `sub` issued by this self-hosted Logto tenant as the canonical Fireseed user ID. Logto documents its user `id` as a unique generated identifier; for one issuer, this is the subject identifier apps receive. Persist `sub` as the eventual owner ID, never an Apple subject, Google subject, email, username, or display name. Do not add a mapping database without a demonstrated need.
+Use the OIDC `sub` issued by this self-hosted Logto tenant as the canonical Fireseed user ID. Logto documents its user `id` as a unique generated identifier; for one issuer, this is the subject identifier apps receive. Persist `sub` as `Record.ownerID` scoped by `Record.ownerIssuer`; never use email, username, or display name as identity. Do not add a mapping database without a demonstrated need.
 
 The subject is stable within this Logto identity authority, not a promise that independently seeded local, staging, and production tenants share IDs. Environments are separate identity namespaces. Moving an account to another issuer needs an explicit verified migration/linking process; do not silently rewrite local record owners. AIQuickNote's existing local mock owner IDs and record ownership remain untouched in this phase.
 
@@ -83,7 +83,7 @@ PostgreSQL in this environment is only Logto identity infrastructure. Credential
 
 ## Environments
 
-Only LOCAL is implemented. LOCAL, STAGING, and PRODUCTION must later have distinct issuer/endpoints, client credentials, database, secrets, and operational access. No environment shares a production database. Switching environments is configuration selection in the future app adapter; it is never an implicit migration of user IDs or app data.
+The app configuration seam supports LOCAL, STAGING, and PRODUCTION, but only LOCAL has an issuer/endpoint default and its public client ID remains a local setting. STAGING and PRODUCTION have no endpoints or credentials configured. No environment shares a production database. Switching environments is configuration selection; it is never an implicit migration of user IDs or app data.
 
 ## Logging and security
 
@@ -100,9 +100,9 @@ Follow `docs/fireseed-identity-logging-change-protocol.md`. Never log passwords,
 
 - Current stable release at review: Logto OSS `v1.43.0`, published by the upstream Logto repository. Its official demo Compose uses `svhd/logto` and PostgreSQL 17. The demo is explicitly not for production.
 - Logto OSS defaults to ports 3001 (core) and 3002 (Admin Console), and officially recommends CLI database seeding.
-- Logto Swift SDK v2 is currently documented as `2.0.0`, using `ASWebAuthenticationSession`; no SDK is added in this phase.
+- The app pins Logto Swift SDK `2.0.0-beta.1`; v2 is a prerelease using `ASWebAuthenticationSession` and its supported secure session storage.
 - Logto's built-in email service is Cloud-only for OSS users; local development uses the official SMTP connector pointed at a loopback-only Mailpit sink. Mailpit captures, but does not externally deliver, Logto-generated verification emails.
-- Local operator sign-in, SMTP connector, native app client, email-only sign-in settings, and end-user OTP flow are not yet verified in Phase 2.
+- Phase 2 verified the local email OTP loop; Phase 3C does not claim an app-to-Logto OTP run from iOS because the Logto endpoint remains Windows loopback-only.
 - Account API sensitive operations use short-lived verification records. Social linking requires both recent verification of the current user and verification of the new social identity.
 - Automatic email/phone matching can be disabled, but the manual first-registration linking branch needs a pinned-version security check as described above.
 - Logto self-hosting documentation lists substantial recommended resources (2 vCPU, 8 GiB RAM, 256 GiB disk). A typical developer laptop may run below this recommendation; record actual resource behavior during the pending local runtime smoke check.
@@ -123,12 +123,12 @@ Primary references reviewed on 2026-09-23:
 
 ## Open questions / blockers
 
-1. Sign into the local Admin Console in the active Codex browser, then configure the Mailpit SMTP connector, native/public app client, exact redirects, and email-verification-code-only sign-in.
-2. Complete signup, logout/re-login, and Logto/PostgreSQL restart tests; compare the same issuer-scoped `sub` each time.
-3. Verify Logto `1.43.0` manual duplicate-email account-linking branch meets Fireseed's recent-verification constraint before enabling social sign-up for real users.
+1. Enter the local Native/Public client ID in the local Debug build configuration and validate Email OTP from a device-reachable development endpoint.
+2. Keep the local Logto endpoint loopback-only until an approved device transport/configuration is established.
+3. Verify Logto `1.43.0` manual duplicate-email account-linking branch before enabling social sign-up for real users.
 4. Verify final-method deletion behavior through end-user Account API for every enabled authentication method before shipping IdentityKit unlink controls.
 5. Immutable image digests should be captured for each target OS/architecture before shared CI or non-local deployment.
 
 ## Scope freeze
 
-No edits to AIQuickNote business logic, parser, speech, records, ownerID semantics, local persistence, search, reminders, backup, sharing, skins, or tests are made by this identity phase.
+Phase 3C adds only issuer-scoped record ownership and backup markers required by OIDC `sub` semantics. Parser, speech, search, reminders, sharing, and skins remain unchanged; see [the Phase 3C integration note](fireseed-identity-phase-3c.md) for provider and validation boundaries.
