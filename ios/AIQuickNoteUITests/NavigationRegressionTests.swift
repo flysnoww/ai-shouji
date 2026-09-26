@@ -76,4 +76,37 @@ final class NavigationRegressionTests: XCTestCase {
         XCTAssertEqual(app.staticTexts["search.page"].firstMatch.label, "2 / 3")
         screenshot("search-page-two-restored")
     }
+
+    func testFirstSaveWaitsForLocalIdentityAndCancelKeepsDraft() {
+        let identityApp = XCUIApplication()
+        identityApp.launchArguments = ["--ui-identity-flow-tests", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        identityApp.launch()
+
+        let input = identityApp.descendants(matching: .any)["home.capture.input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        input.tap()
+        input.typeText("记下 Phase 3B 首次保存验收")
+        identityApp.buttons["home.capture.submit"].tap()
+
+        let save = identityApp.buttons["review.save"]
+        XCTAssertTrue(save.waitForExistence(timeout: 10))
+        save.tap()
+        let confirmLogin = identityApp.buttons["identity.login.confirm"]
+        XCTAssertTrue(confirmLogin.waitForExistence(timeout: 5))
+        identityApp.buttons["identity.login.cancel"].tap()
+        XCTAssertTrue(identityApp.descendants(matching: .any)["review.rawInput"].waitForExistence(timeout: 5))
+        XCTAssertTrue(save.exists)
+
+        save.tap()
+        XCTAssertTrue(confirmLogin.waitForExistence(timeout: 5))
+        confirmLogin.tap()
+
+        let memo = identityApp.buttons["home.module.memo"]
+        XCTAssertTrue(memo.waitForExistence(timeout: 10))
+        if !memo.isHittable { identityApp.swipeUp() }
+        memo.tap()
+        let records = identityApp.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "record."))
+        XCTAssertTrue(records.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(records.count, 1)
+    }
 }
