@@ -153,7 +153,7 @@ enum ReminderServiceError: Error { case permissionDenied }
         guard shouldRestoreSession, !didRestoreSession, identity.state == .resolving else { return }
         didRestoreSession = true
         do { try await identity.restoreSession() }
-        catch { error = "无法恢复本地测试身份。"; identity.resolveSignedOut() }
+        catch { self.error = "无法恢复本地测试身份。"; identity.resolveSignedOut() }
         reload()
         if let pendingSave {
             if identity.isAuthenticated { consumePendingSave(pendingSave.id) }
