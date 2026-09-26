@@ -20,11 +20,11 @@ struct IdentityProviderConfiguration {
     init?(info: [String: Any]) {
         guard let environment = (info["FireseedIdentityEnvironment"] as? String).flatMap(IdentityEnvironment.init(rawValue:)) else { return nil }
         self.environment = environment
-        issuer = (info["FireseedIdentityIssuer"] as? String ?? "").trimmed
-        endpoint = (info["FireseedIdentityEndpoint"] as? String ?? "").trimmed
-        clientID = (info["FireseedIdentityClientID"] as? String ?? "").trimmed
-        redirectURI = (info["FireseedIdentityRedirectURI"] as? String ?? "").trimmed
-        postLogoutRedirectURI = (info["FireseedIdentityPostLogoutRedirectURI"] as? String ?? "").trimmed
+        issuer = (info["FireseedIdentityIssuer"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        endpoint = (info["FireseedIdentityEndpoint"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        clientID = (info["FireseedIdentityClientID"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        redirectURI = (info["FireseedIdentityRedirectURI"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        postLogoutRedirectURI = (info["FireseedIdentityPostLogoutRedirectURI"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     var isUsable: Bool {
