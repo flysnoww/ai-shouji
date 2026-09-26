@@ -300,7 +300,7 @@ final class CoreTests: XCTestCase {
     }
 
     @MainActor
-    func testCanceledFirstSaveCannotBeConsumedByLaterLogin() async {
+    func testCanceledFirstSaveCannotBeConsumedByLaterLogin() async throws {
         let suite = "IdentityCancelTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
