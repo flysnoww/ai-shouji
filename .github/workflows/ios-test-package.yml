@@ -2,6 +2,15 @@ name: iOS Internal Test Package
 
 on:
   workflow_dispatch:
+    inputs:
+      identity_endpoint:
+        description: Temporary HTTPS Logto endpoint
+        required: true
+        type: string
+      identity_client_id:
+        description: Logto Native/Public client ID
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -44,14 +53,25 @@ jobs:
             CODE_SIGNING_ALLOWED=NO | tee xcodebuild-test.log
 
       - name: Build unsigned iPhone app
+        env:
+          FIRESEED_IDENTITY_ENDPOINT: ${{ inputs.identity_endpoint }}
+          FIRESEED_IDENTITY_CLIENT_ID: ${{ inputs.identity_client_id }}
         run: |
           set -o pipefail
+          test -n "$FIRESEED_IDENTITY_ENDPOINT"
+          test -n "$FIRESEED_IDENTITY_CLIENT_ID"
+          echo "::add-mask::$FIRESEED_IDENTITY_ENDPOINT"
+          echo "::add-mask::$FIRESEED_IDENTITY_CLIENT_ID"
           xcodebuild \
             -project ios/AIQuickNote.xcodeproj \
             -scheme AIQuickNote \
             -sdk iphoneos \
             -configuration Release \
             -derivedDataPath DerivedData \
+            FIRESEED_IDENTITY_ENVIRONMENT=STAGING \
+            "FIRESEED_IDENTITY_ISSUER=$FIRESEED_IDENTITY_ENDPOINT/oidc" \
+            "FIRESEED_IDENTITY_ENDPOINT=$FIRESEED_IDENTITY_ENDPOINT" \
+            "FIRESEED_IDENTITY_CLIENT_ID=$FIRESEED_IDENTITY_CLIENT_ID" \
             CODE_SIGNING_ALLOWED=NO \
             build | tee xcodebuild-device-build.log
 
