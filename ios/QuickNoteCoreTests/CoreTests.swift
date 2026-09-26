@@ -294,7 +294,8 @@ final class CoreTests: XCTestCase {
         let before = store.records
         XCTAssertThrowsError(try coreB.replaceCurrentOwnerRecords(with: payload.records)) { XCTAssertEqual($0 as? CoreError, .backupOwnerMismatch) }
         XCTAssertEqual(store.records, before)
-        let manifest = try JSONDecoder().decode(ExportManifest.self, from: XCTUnwrap(ZipArchive.entries(in: archive)["manifest.json"]))
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let manifest = try decoder.decode(ExportManifest.self, from: XCTUnwrap(ZipArchive.entries(in: archive)["manifest.json"]))
         XCTAssertEqual(manifest.schemaVersion, 3); XCTAssertEqual(manifest.ownerIssuer, issuerA)
     }
 
