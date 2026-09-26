@@ -89,12 +89,22 @@ struct IdentityProviderConfiguration {
     }
 
     func signIn() async throws -> FireseedUser {
-        guard let client, let configuration, configuration.isUsable else { throw IdentityProviderError.notConfigured }
+        guard let configuration else { throw IdentityProviderError.notConfigured }
+        guard configuration.isUsable, let client else {
+            if configuration.environment == .staging {
+                throw IdentityProviderError.stagingAuthenticationFailed(stage: "CONFIG", errorType: "InvalidIdentityConfiguration", domain: "", code: 0)
+            }
+            throw IdentityProviderError.notConfigured
+        }
+        var failureStage = "OIDC_SDK_SIGN_IN"
         do {
             try await client.signInWithBrowser(redirectUri: configuration.redirectURI)
             try Task.checkCancellation()
-            guard client.oidcConfig?.issuer == configuration.issuer else { throw IdentityProviderError.authenticationFailed }
+            failureStage = "ID_TOKEN"
             let claims = try client.getIdTokenClaims()
+            failureStage = "ISSUER_VALIDATION"
+            guard client.oidcConfig?.issuer == configuration.issuer else { throw IdentityProviderError.authenticationFailed }
+            failureStage = "USER_MAPPING"
             return try Self.user(subject: claims.sub, issuer: claims.iss, expectedIssuer: configuration.issuer,
                                  email: claims.email, emailVerified: claims.emailVerified, displayName: claims.name)
         } catch is CancellationError {
@@ -102,7 +112,15 @@ struct IdentityProviderConfiguration {
             throw CancellationError()
         } catch {
             if Self.isUserCancelled(error) { throw CancellationError() }
-            if error is IdentityProviderError { throw error }
+            if let identityError = error as? IdentityProviderError {
+                if configuration.environment == .staging, case .authenticationFailed = identityError {
+                    throw IdentityProviderError.stagingAuthenticationFailed(stage: failureStage, errorType: "IdentityProviderError", domain: "Fireseed.Identity", code: 1)
+                }
+                throw identityError
+            }
+            if configuration.environment == .staging {
+                throw Self.stagingFailure(stage: failureStage, error: error)
+            }
             throw IdentityProviderError.authenticationFailed
         }
     }
@@ -124,5 +142,20 @@ struct IdentityProviderConfiguration {
         let wrapped = error as? LogtoClientErrors.SignIn
         let cause = (wrapped?.innerError ?? error) as NSError
         return cause.domain == ASWebAuthenticationSessionError.errorDomain && cause.code == ASWebAuthenticationSessionError.Code.canceledLogin.rawValue
+    }
+
+    static func stagingFailure(stage: String, error: Error) -> IdentityProviderError {
+        let cause = (error as? LogtoClientErrors.SignIn)?.innerError ?? error
+        let nsError = cause as NSError
+        return .stagingAuthenticationFailed(
+            stage: stage,
+            errorType: safeDiagnosticValue(String(reflecting: Swift.type(of: error))),
+            domain: safeDiagnosticValue(nsError.domain),
+            code: nsError.code
+        )
+    }
+
+    private static func safeDiagnosticValue(_ value: String) -> String {
+        String(value.filter { $0.isASCII && ($0.isLetter || $0.isNumber || "._-".contains($0)) }.prefix(96))
     }
 }

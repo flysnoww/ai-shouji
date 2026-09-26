@@ -196,10 +196,10 @@ enum ReminderServiceError: Error { case permissionDenied }
             } catch {
                 guard activeAuthRequestID == requestID else { return }
                 activeAuthRequestID = nil; authTask = nil; pendingSave = nil; loginPresented = false
-                if error is IdentityProviderError {
-                    self.error = "登录未完成，请检查 Identity 配置或网络后重试。"
+                if case let IdentityProviderError.stagingAuthenticationFailed(stage, errorType, domain, code) = error {
+                    self.error = "登录未完成（STAGING诊断）\n阶段：\(stage)\n错误类型：\(errorType)\n域：\(domain.isEmpty ? "-" : domain) · 代码：\(code)"
                 } else {
-                    self.error = error.localizedDescription
+                    self.error = "登录未完成，请检查 Identity 配置或网络后重试。"
                 }
             }
         }

@@ -14,6 +14,16 @@ private final class SpyStore: RecordStore, @unchecked Sendable {
 }
 
 final class CoreTests: XCTestCase {
+    #if canImport(UIKit) && !canImport(QuickNoteCore)
+    @MainActor func testStagingAuthDiagnosticOmitsRawErrorMessage() {
+        let rawError = NSError(domain: "example.oauth", code: 401, userInfo: [NSLocalizedDescriptionKey: "OTP 123456 access_token=secret"])
+        guard case let IdentityProviderError.stagingAuthenticationFailed(stage, type, domain, code) = LogtoIdentityProvider.stagingFailure(stage: "TOKEN_EXCHANGE", error: rawError) else { return XCTFail("Expected sanitized staging diagnostics") }
+        let shown = "\(stage) \(type) \(domain) \(code)"
+        XCTAssertTrue(shown.contains("TOKEN_EXCHANGE")); XCTAssertTrue(shown.contains("example.oauth")); XCTAssertTrue(shown.contains("401"))
+        XCTAssertFalse(shown.contains("123456")); XCTAssertFalse(shown.contains("access_token")); XCTAssertFalse(shown.contains("secret"))
+    }
+    #endif
+
     func testDraftParserExamplesAndSearch() async throws {
         let parser = DeterministicDraftParser(calendar: Calendar(identifier: .gregorian), now: { Date(timeIntervalSince1970: 1_800_000_000) })
         guard case .create(let ledger) = try await parser.parse("今天沃尔玛购物16美元，用美国银行支付") else { return XCTFail() }

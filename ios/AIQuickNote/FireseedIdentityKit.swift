@@ -29,6 +29,7 @@ enum IdentityState: Equatable {
 enum IdentityProviderError: Error {
     case notConfigured
     case authenticationFailed
+    case stagingAuthenticationFailed(stage: String, errorType: String, domain: String, code: Int)
     case signOutFailed
 }
 
