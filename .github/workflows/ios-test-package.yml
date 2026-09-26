@@ -49,6 +49,7 @@ jobs:
             -scheme AIQuickNote \
             -configuration Debug \
             -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            -arch arm64 \
             -resultBundlePath TestResults.xcresult \
             CODE_SIGNING_ALLOWED=NO | tee xcodebuild-test.log
 
