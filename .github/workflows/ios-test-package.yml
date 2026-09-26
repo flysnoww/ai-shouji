@@ -49,8 +49,8 @@ jobs:
             -scheme AIQuickNote \
             -configuration Debug \
             -destination "platform=iOS Simulator,id=$DEVICE_ID" \
-            -arch arm64 \
             -resultBundlePath TestResults.xcresult \
+            ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO | tee xcodebuild-test.log
 
       - name: Build unsigned iPhone app
