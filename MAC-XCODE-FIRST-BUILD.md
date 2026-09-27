@@ -34,15 +34,9 @@
 5. 打开 `Team` 下拉菜单，选择自己的 Apple ID 团队。
 6. 如果没有团队，打开 Xcode 菜单 `Xcode → Settings… → Accounts`，点击左下角 `+`，登录 Apple ID，然后返回本页选择团队。
 
-## 5. Bundle Identifier 冲突时修改
+## 5. Bundle Identifier
 
-默认占位值是 `com.example.AIQuickNote`，真机签名时通常需要改成唯一值。
-
-1. 仍在 `AIQuickNote` target 的 `Signing & Capabilities` 页面。
-2. 找到 `Bundle Identifier`。
-3. 改成只属于你的反向域名形式，例如 `com.你的英文名.AIQuickNote`。
-4. 只使用英文字母、数字、点和连字符，不要使用空格或中文。
-5. 如果测试 target 同样提示冲突，在 `TARGETS → AIQuickNoteTests → Signing & Capabilities` 中把它改成相似的唯一值，例如在末尾加 `.tests`。
+主 App 的正式 Bundle ID 固定为 `org.tmiai.aiquicknote`，签名时不要为了解决 Team/证书问题而更改它。Unit Tests 和 UI Tests 保留各自独立的测试 Bundle ID。Logto 回调仍使用 `com.fireseed.aiquicknote://oauth/callback` 与 `com.fireseed.aiquicknote://oauth/signed-out`，不要随 Bundle ID 更名。
 
 ## 6. 选择 iPhone Simulator
 
@@ -79,7 +73,7 @@
 1. 用数据线连接 iPhone 和 Mac，并解锁 iPhone。
 2. iPhone 弹出“要信任此电脑吗？”时点击“信任”，输入锁屏密码。
 3. 在 Xcode 顶部设备列表中选择这台 iPhone。
-4. 确认已经按第 4 步选择 Team，并按第 5 步设置唯一 Bundle Identifier。
+4. 确认已经按第 4 步选择 Team；主 App Bundle ID 应保持 `org.tmiai.aiquicknote`。
 5. 点击运行按钮。
 6. 如果 iPhone 要求开启开发者模式，打开 `设置 → 隐私与安全性 → 开发者模式`，按提示重启并确认。
 7. 免费 Apple ID 签名可能只有短期有效期；过期后重新从 Xcode 运行即可。
@@ -88,7 +82,7 @@
 
 1. 确认 Mac 和 iPhone 已联网，Apple ID 已登录 Xcode。
 2. 确认 `Automatically manage signing` 已勾选并选择了 Team。
-3. 把 Bundle Identifier 改成更独特的值。
+3. 确认 Bundle ID 仍为 `org.tmiai.aiquicknote`，并检查 Apple Developer 中已创建对应 App ID。
 4. 确认 iPhone 已解锁、已信任 Mac，并启用了开发者模式。
 5. 点击 `Product → Clean Build Folder`，然后再次 `Product → Build`。
 6. 如果错误仍在，只处理 Xcode 显示的第一条签名错误；不要删除项目文件或重建工程。
