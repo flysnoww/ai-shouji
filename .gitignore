@@ -20,6 +20,7 @@ auth.json
 *.pem
 *.p12
 *.mobileprovision
+/.local-apple-signing/
 
 # Source is already expanded in this repository
 quicknote-aci-reference.zip
