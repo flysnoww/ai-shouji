@@ -66,10 +66,21 @@ jobs:
           printf '%s' "$APPLE_PROVISIONING_PROFILE_BASE64" | base64 -D > "$PROFILE"
           printf '%s' "$APPSTORE_API_PRIVATE_KEY_BASE64" | base64 -D > "$API_KEY"
           openssl pkey -in "$API_KEY" -noout
+          if openssl pkcs12 -info -in "$P12" -passin env:APPLE_CERTIFICATE_PASSWORD -noout >/dev/null 2>&1; then
+            echo "OpenSSL PKCS12 validation: PASS"
+          else
+            echo "OpenSSL PKCS12 validation: FAIL" >&2
+            exit 1
+          fi
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security import "$P12" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          if security import "$P12" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security; then
+            echo "macOS security import: PASS"
+          else
+            echo "macOS security import: FAIL" >&2
+            exit 1
+          fi
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security list-keychains -d user -s "$KEYCHAIN" "$HOME/Library/Keychains/login.keychain-db"
           security find-identity -v -p codesigning "$KEYCHAIN" | grep -q 'Apple Distribution:'
