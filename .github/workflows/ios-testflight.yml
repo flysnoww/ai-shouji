@@ -11,7 +11,22 @@ on:
       build_number:
         description: Unique App Store Connect build number
         required: true
-        default: "2"
+        default: "6"
+        type: string
+      identity_environment:
+        description: Identity environment for this internal validation build
+        required: true
+        default: STAGING
+        type: choice
+        options:
+          - STAGING
+      identity_endpoint:
+        description: Temporary HTTPS Logto Core endpoint (trycloudflare.com)
+        required: true
+        type: string
+      identity_client_id:
+        description: Existing Logto Native/Public client ID
+        required: true
         type: string
 
 permissions:
@@ -103,8 +118,19 @@ jobs:
         env:
           MARKETING_VERSION: ${{ inputs.marketing_version }}
           BUILD_NUMBER: ${{ inputs.build_number }}
+          IDENTITY_ENVIRONMENT: ${{ inputs.identity_environment }}
+          IDENTITY_ENDPOINT: ${{ inputs.identity_endpoint }}
+          IDENTITY_CLIENT_ID: ${{ inputs.identity_client_id }}
         run: |
           set -euo pipefail
+          IDENTITY_ENDPOINT="${IDENTITY_ENDPOINT%/}"
+          IDENTITY_ISSUER="$IDENTITY_ENDPOINT/oidc"
+          echo "::add-mask::$IDENTITY_ENDPOINT"
+          echo "::add-mask::$IDENTITY_ISSUER"
+          echo "::add-mask::$IDENTITY_CLIENT_ID"
+          [[ "$IDENTITY_ENVIRONMENT" == 'STAGING' ]]
+          [[ "$IDENTITY_ENDPOINT" =~ ^https://[a-z0-9-]+\.trycloudflare\.com$ ]]
+          [[ -n "$IDENTITY_CLIENT_ID" && "$IDENTITY_CLIENT_ID" != *[[:space:]]* ]]
           xcodebuild archive \
             -project ios/AIQuickNote.xcodeproj \
             -scheme AIQuickNote \
@@ -118,6 +144,10 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY='Apple Distribution' \
             AIQ_TESTFLIGHT_PROFILE_SPECIFIER='AIQuickNote App Store Distribution' \
+            FIRESEED_IDENTITY_ENVIRONMENT="$IDENTITY_ENVIRONMENT" \
+            FIRESEED_IDENTITY_ENDPOINT="$IDENTITY_ENDPOINT" \
+            FIRESEED_IDENTITY_ISSUER="$IDENTITY_ISSUER" \
+            FIRESEED_IDENTITY_CLIENT_ID="$IDENTITY_CLIENT_ID" \
             CODE_SIGNING_ALLOWED=YES | tee "$RUNNER_TEMP/xcodebuild-archive.log"
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/AIQuickNote.xcarchive" \
@@ -129,7 +159,13 @@ jobs:
           cp "$IPA" release-artifact/AIQuickNote-TestFlight.ipa
           unzip -q release-artifact/AIQuickNote-TestFlight.ipa -d "$RUNNER_TEMP/ipa-contents"
           APP="$RUNNER_TEMP/ipa-contents/Payload/AIQuickNote.app"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")" = 'org.tmiai.aiquicknote'
+          PLIST="$APP/Info.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST")" = 'org.tmiai.aiquicknote'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :FireseedIdentityEnvironment' "$PLIST")" = "$IDENTITY_ENVIRONMENT"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :FireseedIdentityEndpoint' "$PLIST")" = "$IDENTITY_ENDPOINT"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :FireseedIdentityIssuer' "$PLIST")" = "$IDENTITY_ISSUER"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :FireseedIdentityClientID' "$PLIST")" = "$IDENTITY_CLIENT_ID"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :FireseedIdentityRedirectURI' "$PLIST")" = 'com.fireseed.aiquicknote://oauth/callback'
           codesign --verify --deep --strict "$APP"
           echo "Version: $MARKETING_VERSION ($BUILD_NUMBER)" > release-artifact/build-info.txt
           echo "Bundle ID: org.tmiai.aiquicknote" >> release-artifact/build-info.txt
