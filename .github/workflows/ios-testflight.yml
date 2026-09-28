@@ -117,7 +117,7 @@ jobs:
             DEVELOPMENT_TEAM=Z36ZADH7T7 \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY='Apple Distribution' \
-            PROVISIONING_PROFILE_SPECIFIER='AIQuickNote App Store Distribution' \
+            AIQ_TESTFLIGHT_PROFILE_SPECIFIER='AIQuickNote App Store Distribution' \
             CODE_SIGNING_ALLOWED=YES | tee "$RUNNER_TEMP/xcodebuild-archive.log"
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/AIQuickNote.xcarchive" \
