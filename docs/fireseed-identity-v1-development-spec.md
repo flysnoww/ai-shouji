@@ -1,7 +1,7 @@
 # Fireseed Identity V1 Development Spec
 
-Status: Phase 3C provider integration implemented; native CI and local-device OIDC validation pending.
-Baseline: `cb4ed8fd161effa17c1dedf094c4b181663c64fc` (frozen Phase 3B).
+**Current status: Fireseed Identity Phase 3D — real iPhone + real Logto Email OTP end-to-end validation.** Phases 3B and 3C are complete; this document's Phase 3C notes below are historical implementation/design context, not the current milestone. See the canonical [AIQuickNote Current Status and Handoff](../CURRENT_STATUS.md) for acceptance tests, TestFlight staging configuration, and next steps.
+Historical baseline: `cb4ed8fd161effa17c1dedf094c4b181663c64fc` (frozen Phase 3B).
 Last upstream review: 2026-09-25.
 
 ## Goals
