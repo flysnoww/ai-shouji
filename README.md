@@ -1,5 +1,7 @@
 # QuickNote Open ACI Reference Implementation
 
+For the native iOS app and current Identity Phase 3D handoff, start with [CURRENT_STATUS.md](CURRENT_STATUS.md). This README describes the separate Python ACI reference and its tests; its historical feature list is not the current iOS feature list. See [the stability audit](docs/full-stability-audit.md) for current regression evidence.
+
 Status: **IMPLEMENTATION_CANDIDATE**
 
 This project implements the Open ACI Minimum Implementation Profile for AI QuickNote (AI 随手记). It is a local-first, testable reference—not a production-ready mobile app and not a general AI agent.
@@ -14,6 +16,8 @@ The six implemented capabilities are:
 - `aci.ai_quicknote.record.search`
 
 All entry points call one `CoreCapabilityLayer`. The SQLite repository, authorization policy, audit writer, and idempotency behavior are below that layer. Future UI, iOS App Intents, Android Intents, MCP, and test runners should be adapters only.
+
+Python records are scoped to the trusted `Actor.subject` supplied by the adapter. Grants do not grant access to another subject's records. Existing rows without an ownership marker remain on disk but are hidden until an explicit ownership migration is designed; they are never adopted automatically. This reference has no OIDC adapter: an external adapter must establish canonical issuer/subject identity before constructing an actor. `get_trace` and `get_audit` are trusted local diagnostics, not public MCP capabilities.
 
 ## What is implemented
 
@@ -59,4 +63,3 @@ response = adapter.call_tool(
 ```
 
 See `docs/ACI-Minimum-Implementation-Profile.md` for normative scope and `docs/mobile-adapter-checklist.md` for the next iOS/Android work.
-

@@ -1,5 +1,7 @@
 # QuickNote Open ACI Contract Test Results
 
+Historical baseline below. For the 2026-10-03 full stability audit, Windows regression results and macOS/Xcode run evidence, use [the current audit report](docs/full-stability-audit.md).
+
 Status: **IMPLEMENTATION_CANDIDATE**
 
 Run date: 2026-09-09

@@ -1,7 +1,7 @@
 # AIQuickNote Current Status and Handoff
 
 Last confirmed: 2026-10-03
-Current source baseline: `81ef749e054c7b5c23383d474240bcc1d821c54f` (`main`, `origin/main`)
+Release configuration baseline: `81ef749e054c7b5c23383d474240bcc1d821c54f`. Stability audit implementation: `d454ef7f3b1d24012f8246e904421c00a6c476c6` on `main` (see validation gate below).
 
 This is the canonical project handoff for a new machine, Codex task, or chat window. Detailed historical design and implementation notes remain in the linked documents below.
 
@@ -10,6 +10,12 @@ This is the canonical project handoff for a new machine, Codex task, or chat win
 **Fireseed Identity Phase 3D — real iPhone + real Logto Email OTP end-to-end validation.** Identity Phases 3B and 3C are complete and are not the current development phase.
 
 The iOS and TestFlight release pipeline is complete and passed: `IOS_TESTFLIGHT_PIPELINE_PASSED`.
+
+## Stability audit handoff
+
+The full stability audit repaired ownership isolation, Identity lifecycle races, PendingSave/review cancellation, stale account writes, persistence validation, numeric input, error feedback and ordinary CI coverage. See [AIQuickNote Full Audit Report](docs/full-stability-audit.md) for findings, commits, tests and remaining risks.
+
+**Audit gate: `READY_FOR_IDENTITY_3D_REAL_DEVICE_TEST`.** Ordinary iOS CI [run 37152279415](https://github.com/flysnoww/ai-shouji/actions/runs/37152279415) passed at implementation commit `d454ef7f3b1d24012f8246e904421c00a6c476c6`: 35 Swift package, 51 app unit and 5 UI tests; Release/Debug builds; Production metadata checks; 15 Python and 2 local OIDC harness tests. A later documentation-only commit does not change that tested implementation. No new TestFlight build was uploaded during this audit. The four physical-iPhone acceptance tests below remain pending; do not mark them passed from simulator or mock-provider evidence.
 
 ## iOS and TestFlight release status
 
@@ -52,7 +58,7 @@ Record final status as `IDENTITY_3D_REAL_DEVICE_PASSED` only after all four pass
 
 ## STAGING TestFlight identity configuration
 
-- Latest related commit: `81ef749e054c7b5c23383d474240bcc1d821c54f` — `Support staging identity TestFlight builds`.
+- STAGING workflow support commit: `81ef749e054c7b5c23383d474240bcc1d821c54f` — `Support staging identity TestFlight builds`.
 - `workflow_dispatch` inputs: `identity_environment`, `identity_endpoint`, and `identity_client_id`.
 - A STAGING archive injects `FIRESEED_IDENTITY_ENVIRONMENT`, `FIRESEED_IDENTITY_ENDPOINT`, `FIRESEED_IDENTITY_ISSUER`, and `FIRESEED_IDENTITY_CLIENT_ID`.
 - Production Identity defaults remain empty. Never hard-code a staging tunnel in project files.
@@ -67,7 +73,7 @@ Record final status as `IDENTITY_3D_REAL_DEVICE_PASSED` only after all four pass
 
 - Development machine: Windows with NVIDIA RTX 5070 Ti; it has no macOS/Xcode and cannot create a native iOS archive locally.
 - iOS archives continue to use the GitHub macOS runner. Keep GitHub Actions as CI and remote fallback after iOS development moves to the M5 Ultra Mac.
-- At the confirmed baseline, local `main` matched `origin/main` at `81ef749e054c7b5c23383d474240bcc1d821c54f`.
+- At audit start, local `main` matched `origin/main` at `3147bfd0b125e79298f2533e00a684868c930170`. Audit fixes were pushed in scoped commits; use the audit report for tested implementation and CI evidence, and fetch before continuing on another machine.
 - Preserve these untracked files; do not delete or commit them unless explicitly requested: `pelican-bicycle.svg`, `新建 Text Document.txt`.
 
 ## Next step and scope boundary
