@@ -5,7 +5,6 @@ const endpoint = (process.env.LOGTO_ENDPOINT ?? 'http://127.0.0.1:3301').replace
 const clientId = process.env.LOGTO_CLIENT_ID ?? 'woebxmgo960m5l0nl12ae';
 const redirectUri = process.env.LOGTO_REDIRECT_URI ?? 'http://127.0.0.1:8765/callback';
 const timeoutMs = 10 * 60 * 1000;
-const b64url = (value) => Buffer.from(value).toString('base64url');
 const random = (bytes = 32) => randomBytes(bytes).toString('base64url');
 const requireValue = (condition, message) => { if (!condition) throw new Error(message); };
 
@@ -28,15 +27,23 @@ for (const [key, value] of Object.entries({
   nonce,
 })) authorize.searchParams.set(key, value);
 
+let callbackConsumed = false;
+let deadline;
 const server = createServer(async (request, response) => {
   const callback = new URL(request.url, redirectUri);
+  if (callback.pathname === '/start') {
+    response.writeHead(302, { location: authorize.toString(), 'cache-control': 'no-store' }).end();
+    return;
+  }
   if (callback.pathname !== new URL(redirectUri).pathname) {
     response.writeHead(404).end();
     return;
   }
   try {
     requireValue(callback.searchParams.get('state') === state, 'OAuth state mismatch.');
-    requireValue(!callback.searchParams.has('error'), `Authorization failed: ${callback.searchParams.get('error')}`);
+    requireValue(!callbackConsumed, 'Callback was already consumed.');
+    callbackConsumed = true;
+    requireValue(!callback.searchParams.has('error'), 'Authorization failed or was cancelled.');
     const code = callback.searchParams.get('code');
     requireValue(code, 'Authorization code missing.');
     const tokenResponse = await fetch(metadata.token_endpoint, {
@@ -76,16 +83,18 @@ const server = createServer(async (request, response) => {
     server.close();
   } catch (error) {
     response.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' }).end('OIDC test failed; check the local console output.');
-    console.error(error.message);
+    console.error('OIDC validation failed. No token or callback data was logged.');
     server.close(() => process.exitCode = 1);
   }
 });
 
 server.listen(new URL(redirectUri).port, '127.0.0.1', () => {
-  console.log(`Open this local authorization URL in the browser:\n${authorize}`);
+  console.log(`Open the local sign-in launcher in the browser:\n${new URL("/start", redirectUri)}`);
   console.log('Complete Email verification code in Logto; this process prints only the verified subject (sub).');
 });
-server.setTimeout(timeoutMs, () => {
+server.on("close", () => clearTimeout(deadline));
+deadline = setTimeout(() => {
   console.error('Timed out waiting for the local authorization callback.');
   server.close(() => process.exitCode = 1);
-});
+  server.closeAllConnections();
+}, timeoutMs);

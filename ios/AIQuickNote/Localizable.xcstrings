@@ -1,6 +1,17 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "正在处理登录状态…" : {"localizations": {"en": {"stringUnit": {"state": "translated", "value": "Processing sign-in…"}}}},
+    "网络连接失败，请检查网络后重新登录。" : {"localizations": {"en": {"stringUnit": {"state": "translated", "value": "Network connection failed. Check your connection and sign in again."}}}},
+    "无法恢复登录状态；本地记录仍保持隔离，请检查网络后重新登录。" : {"localizations": {"en": {"stringUnit": {"state": "translated", "value": "Unable to restore your session. Private records remain hidden. Check your connection and sign in again."}}}},
+    "本机已退出；服务端会话退出未完成，请检查网络。" : {"localizations": {"en": {"stringUnit": {"state": "translated", "value": "Signed out on this device. Server sign-out did not finish. Check your connection."}}}},
+    "分享文件生成失败，请重试。" : {"localizations": {"en": {"stringUnit": {"state": "translated", "value": "Unable to create the share file. Please try again."}}}},
+    "分享图片生成失败，请重试。" : {"localizations": {"en": {"stringUnit": {"state": "translated", "value": "Unable to create the share image. Please try again."}}}},
+    "皮肤读取失败，请重新导入。" : {"localizations": {"en": {"stringUnit": {"state": "translated", "value": "Unable to read this skin. Please import it again."}}}},
+    "当前版本尚不支持保存图片附件。" : {"localizations": {"en": {"stringUnit": {"state": "translated", "value": "Saving image attachments is not supported in this version."}}}},
+    "上一页" : {"localizations": {"en": {"stringUnit": {"state": "translated", "value": "Previous page"}}}},
+    "下一页" : {"localizations": {"en": {"stringUnit": {"state": "translated", "value": "Next page"}}}},
+    "新建记录" : {"localizations": {"en": {"stringUnit": {"state": "translated", "value": "New record"}}}},
     "About" : { "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "关于" } } } },
     "Account" : { "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "账号" } } } },
     "App Version" : { "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "应用版本" } } } },

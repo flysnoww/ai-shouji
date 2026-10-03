@@ -149,6 +149,18 @@ final class IdentityRaceTests: XCTestCase {
         XCTAssertNotNil(model.error); XCTAssertEqual(store.records.count, 1)
     }
 
+    @MainActor func testLeavingReviewInvalidatesOnlyItsPendingSave() async {
+        let provider = DeferredIdentityProvider(), store = SpyStore(), model = AppModel(identityProvider: provider, store: store)
+        let draft = Record(module: .memo, rawInput: "left behind")
+        model.saveOrRequestIdentity(draft) { XCTFail("Abandoned draft saved") }
+        model.cancelPendingSave(for: UUID()); XCTAssertTrue(model.hasPendingSave)
+        model.cancelPendingSave(for: draft.id); XCTAssertFalse(model.hasPendingSave)
+        model.signIn(); await waitUntil { provider.login != nil }
+        provider.login?.resume(returning: user); provider.login = nil
+        await waitUntil { !model.isAuthenticating }
+        XCTAssertEqual(store.saveCount, 0)
+    }
+
     @MainActor func testRedirectMustMatchExactlyAndEmptyHTTPSHostIsRejected() throws {
         var info: [String: Any] = ["FireseedIdentityEnvironment": "STAGING", "FireseedIdentityIssuer": "https://identity.example/oidc", "FireseedIdentityEndpoint": "https://identity.example", "FireseedIdentityClientID": "public", "FireseedIdentityRedirectURI": "com.fireseed.aiquicknote://oauth/callback", "FireseedIdentityPostLogoutRedirectURI": "com.fireseed.aiquicknote://oauth/signed-out"]
         XCTAssertTrue(try XCTUnwrap(IdentityProviderConfiguration(info: info)).isUsable)

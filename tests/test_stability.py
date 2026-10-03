@@ -1,5 +1,6 @@
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -55,6 +56,24 @@ class OwnershipRegressionTests(unittest.TestCase):
     def test_grant_key_separator_cannot_alias_another_actor(self):
         with self.assertRaises(ValidationError):
             self.core.permissions.grant(Actor("a|b", "c", "Test"), actions={"read"}, modules={"memo"}, duration="continuous")
+
+    def test_invalid_transport_requests_return_errors(self):
+        self.assertEqual(self.adapter.dispatch([], self.a)["error"]["code"], -32600)
+        self.assertEqual(self.adapter.dispatch({"id": 1, "method": "tools/call", "params": []}, self.a)["error"]["code"], -32602)
+
+    def test_failed_begin_releases_transaction_lock(self):
+        self.core.close()
+        with self.assertRaises(sqlite3.ProgrammingError):
+            with self.core._transaction():
+                self.fail("Closed database entered a transaction")
+        released = threading.Event()
+        def acquire():
+            if self.core._lock.acquire(timeout=1):
+                self.core._lock.release()
+                released.set()
+        worker = threading.Thread(target=acquire)
+        worker.start(); worker.join(timeout=2)
+        self.assertTrue(released.is_set())
 
     def test_legacy_rows_remain_on_disk_without_ownership_adoption(self):
         record_id = self.call("aci.ai_quicknote.memo.create", {"content": "legacy"})["result"]["record"]["id"]

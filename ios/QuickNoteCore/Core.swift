@@ -455,11 +455,14 @@ public enum ZipArchive {
     }
 
     public static func entries(in archive: Data, requiredEntry: String? = "manifest.json") throws -> [String: Data] {
-        var result: [String: Data] = [:], offset = 0
+        guard archive.count <= 50_000_000 else { throw ArchiveError.invalidArchive }
+        var result: [String: Data] = [:], offset = 0, expandedSize = 0
         while offset + 4 <= archive.count, archive.uint32(at: offset) == 0x04034b50 {
             guard offset + 30 <= archive.count else { throw ArchiveError.invalidArchive }
             let method = archive.uint16(at: offset + 8), crc = archive.uint32(at: offset + 14), compressedSize = Int(archive.uint32(at: offset + 18)), uncompressedSize = Int(archive.uint32(at: offset + 22)), nameLength = Int(archive.uint16(at: offset + 26)), extraLength = Int(archive.uint16(at: offset + 28)), nameStart = offset + 30, dataStart = nameStart + nameLength + extraLength, end = dataStart + compressedSize
             guard end <= archive.count, let name = String(data: archive[nameStart..<(nameStart + nameLength)], encoding: .utf8) else { throw ArchiveError.invalidArchive }
+            expandedSize += uncompressedSize
+            guard expandedSize <= 50_000_000, result.count < 1000 else { throw ArchiveError.invalidArchive }
             let compressed = Data(archive[dataStart..<end]), body: Data; if method == 0 { body = compressed } else if method == 8 { body = try inflate(compressed, expectedSize: uncompressedSize) } else { throw ArchiveError.invalidArchive }; guard body.count == uncompressedSize, crc32(body) == crc else { throw ArchiveError.invalidArchive }
             guard result[name] == nil else { throw ArchiveError.invalidArchive }
             result[name] = body; offset = end

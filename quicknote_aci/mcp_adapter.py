@@ -31,6 +31,8 @@ class McpAdapter:
         return {"content": [{"type": "text", "text": "ok" if envelope["ok"] else envelope["error"]["message"]}], "structuredContent": envelope, "isError": not envelope["ok"]}
 
     def dispatch(self, request: dict, actor: Actor) -> dict:
+        if not isinstance(request, dict):
+            return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid request"}}
         method = request.get("method")
         request_id = request.get("id")
         if method == "server/discover":
@@ -39,8 +41,9 @@ class McpAdapter:
             result = {"tools": self.list_tools()}
         elif method == "tools/call":
             params = request.get("params", {})
+            if not isinstance(params, dict):
+                return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "Invalid params"}}
             result = self.call_tool(params.get("name", ""), params.get("arguments", {}), actor, request_id=str(request_id))
         else:
             return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "Method not found"}}
         return {"jsonrpc": "2.0", "id": request_id, "result": result}
-

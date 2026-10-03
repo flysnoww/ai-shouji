@@ -29,6 +29,13 @@ jobs:
       - name: Python contracts and release invariants
         run: python3 -m unittest discover -s tests -v
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Local OIDC harness regression tests
+        run: node --test tests/identity/oidc-pkce-smoke.test.mjs
+
       - name: Release simulator build and metadata validation
         run: |
           set -euo pipefail
