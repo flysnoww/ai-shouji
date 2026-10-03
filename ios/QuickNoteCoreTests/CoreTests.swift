@@ -13,6 +13,154 @@ private final class SpyStore: RecordStore, @unchecked Sendable {
     func save(_ records: [Record]) { saveCount += 1; self.records = records }
 }
 
+final class StabilityTests: XCTestCase {
+    func testAmountRangeMustMatchOneItem() {
+        let outside = Record(module: .ledger, rawInput: "outside", amountItems: [.init(value: 1, currency: "USD"), .init(value: 100, currency: "USD")])
+        let inside = Record(module: .ledger, rawInput: "inside", amountItems: [.init(value: 15, currency: "USD")])
+        let query = RecordQuery(minimumAmount: 10, maximumAmount: 20, currency: "USD")
+        XCTAssertEqual(QuickNoteCore.search(query, in: [outside, inside]).map(\.id), [inside.id])
+    }
+
+    func testReparsePreservesOwnerAndReminderLink() {
+        let original = Record(ownerID: "sub", ownerIssuer: "https://issuer/oidc", module: .todo, rawInput: "old", important: true, reminderEnabled: true, reminderLinked: true, reminderExternalID: "external", reminderState: .active)
+        let updated = original.applyingParsedContent(Record(module: .todo, rawInput: "new"))
+        XCTAssertEqual(updated.id, original.id); XCTAssertEqual(updated.ownerIssuer, original.ownerIssuer)
+        XCTAssertEqual(updated.ownerID, original.ownerID); XCTAssertEqual(updated.reminderExternalID, "external")
+        XCTAssertTrue(updated.reminderLinked); XCTAssertEqual(updated.reminderState, .active)
+        XCTAssertEqual(updated.rawInput, "new"); XCTAssertTrue(updated.important)
+    }
+
+    func testFilePersistenceRejectsDuplicateIDsAndPreservesCorruptSource() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("records.json"), store = FileRecordStore(url: url)
+        let record = Record(ownerID: "owner", module: .memo, rawInput: "persistent")
+        try store.save([record])
+        XCTAssertEqual(try FileRecordStore(url: url).load(), [record])
+        XCTAssertThrowsError(try store.save([record, record]))
+        XCTAssertEqual(try store.load(), [record])
+        let corrupt = Data("corrupt".utf8); try corrupt.write(to: url)
+        let core = QuickNoteCore(store: store, identity: TestIdentity("owner"))
+        XCTAssertThrowsError(try core.save(Record(module: .memo, rawInput: "new")))
+        XCTAssertEqual(try Data(contentsOf: url), corrupt)
+    }
+
+    func testRestoreRejectsDuplicateIDsAndForeignIDCollisions() throws {
+        let own = Record(ownerID: "a", module: .memo, rawInput: "own")
+        let foreign = Record(ownerID: "b", module: .memo, rawInput: "foreign")
+        let store = MemoryRecordStore([own, foreign]), core = QuickNoteCore(store: store, identity: TestIdentity("a"))
+        XCTAssertThrowsError(try core.replaceCurrentOwnerRecords(with: [own, own]))
+        var collision = foreign; collision.ownerID = "a"
+        XCTAssertThrowsError(try core.replaceCurrentOwnerRecords(with: [collision]))
+        XCTAssertEqual(store.records, [own, foreign])
+    }
+
+    func testArchiveDuplicateNamesAreRejected() {
+        let data = ZipArchive.make([("manifest.json", Data("first".utf8)), ("manifest.json", Data("second".utf8))])
+        XCTAssertThrowsError(try ZipArchive.entries(in: data))
+    }
+}
+
+#if canImport(AIQuickNote)
+@MainActor private final class DeferredIdentityProvider: IdentityProvider {
+    var restore: CheckedContinuation<FireseedUser?, Error>?
+    var login: CheckedContinuation<FireseedUser, Error>?
+    var logout: CheckedContinuation<Void, Error>?
+    var loginCalls = 0
+    func restoreSession() async throws -> FireseedUser? { try await withCheckedThrowingContinuation { restore = $0 } }
+    func signIn() async throws -> FireseedUser { loginCalls += 1; return try await withCheckedThrowingContinuation { login = $0 } }
+    func signOut() async throws { try await withCheckedThrowingContinuation { logout = $0 } }
+}
+
+final class IdentityRaceTests: XCTestCase {
+    @MainActor private func waitUntil(_ predicate: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
+        let end = ContinuousClock.now.advanced(by: .seconds(5))
+        while !predicate(), ContinuousClock.now < end { try? await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertTrue(predicate(), file: file, line: line)
+    }
+    @MainActor private var user: FireseedUser { FireseedUser(stableUserID: "subject", issuer: "https://issuer/oidc", email: "attribute@example.invalid", displayName: nil) }
+
+    @MainActor func testLateRestoreCannotUndoLogout() async {
+        let provider = DeferredIdentityProvider(), model = AppModel(identityProvider: provider, store: MemoryRecordStore())
+        let task = Task { await model.restoreSession() }
+        await waitUntil { provider.restore != nil }
+        model.signOut(); model.signIn()
+        XCTAssertEqual(provider.loginCalls, 0); XCTAssertTrue(model.records.isEmpty)
+        provider.restore?.resume(returning: user); provider.restore = nil
+        await task.value
+        await waitUntil { provider.logout != nil }
+        XCTAssertEqual(model.identity.state, .signedOut)
+        provider.logout?.resume(); provider.logout = nil
+        await waitUntil { !model.isSigningOut }
+        XCTAssertEqual(model.identity.state, .signedOut)
+    }
+
+    @MainActor func testCancelledLateCallbackCannotSaveOrOverlapNewLogin() async {
+        let provider = DeferredIdentityProvider(), store = SpyStore(), model = AppModel(identityProvider: provider, store: store)
+        model.saveOrRequestIdentity(Record(module: .memo, rawInput: "cancelled")) { XCTFail("Cancelled completion") }
+        model.signIn(); model.signIn()
+        await waitUntil { provider.login != nil }
+        XCTAssertEqual(provider.loginCalls, 1)
+        model.cancelAuthentication(); model.signIn()
+        XCTAssertEqual(provider.loginCalls, 1)
+        provider.login?.resume(returning: user); provider.login = nil
+        await waitUntil { !model.isAuthenticating }
+        XCTAssertFalse(model.identity.isAuthenticated); XCTAssertEqual(store.saveCount, 0)
+        model.signIn(); await waitUntil { provider.login != nil }
+        provider.login?.resume(returning: user); provider.login = nil
+        await waitUntil { !model.isAuthenticating }
+        XCTAssertTrue(model.identity.isAuthenticated); XCTAssertEqual(store.saveCount, 0)
+    }
+
+    @MainActor func testFirstSaveExactlyOnceAndSameAccountReturns() async {
+        let provider = DeferredIdentityProvider(), store = SpyStore(), model = AppModel(identityProvider: provider, store: store)
+        var completions = 0
+        model.saveOrRequestIdentity(Record(module: .memo, rawInput: "private")) { completions += 1 }
+        model.signIn(); model.signIn(); await waitUntil { provider.login != nil }
+        provider.login?.resume(returning: user); provider.login = nil
+        await waitUntil { !model.isAuthenticating }
+        XCTAssertEqual(store.saveCount, 1); XCTAssertEqual(completions, 1)
+        XCTAssertEqual(store.records.first?.ownerID, user.stableUserID); XCTAssertEqual(store.records.first?.ownerIssuer, user.issuer)
+        model.signOut(); await waitUntil { provider.logout != nil }
+        XCTAssertTrue(model.records.isEmpty); XCTAssertEqual(store.records.count, 1)
+        model.signIn(); XCTAssertEqual(provider.loginCalls, 1)
+        provider.logout?.resume(); provider.logout = nil
+        await waitUntil { !model.isSigningOut }
+        model.signIn(); await waitUntil { provider.login != nil }
+        provider.login?.resume(returning: user); provider.login = nil
+        await waitUntil { !model.isAuthenticating }
+        XCTAssertEqual(model.records.count, 1); XCTAssertEqual(store.saveCount, 1)
+        let restoredProvider = DeferredIdentityProvider(), relaunched = AppModel(identityProvider: restoredProvider, store: store)
+        let task = Task { await relaunched.restoreSession() }
+        await waitUntil { restoredProvider.restore != nil }
+        restoredProvider.restore?.resume(returning: user); restoredProvider.restore = nil
+        await task.value
+        XCTAssertEqual(relaunched.identity.currentUser, user); XCTAssertEqual(relaunched.records, store.records)
+    }
+
+    @MainActor func testRestoreFailureShowsErrorWithoutPrivateRecords() async {
+        let provider = DeferredIdentityProvider(), store = MemoryRecordStore([Record(ownerID: "subject", ownerIssuer: user.issuer, module: .memo, rawInput: "private")])
+        let model = AppModel(identityProvider: provider, store: store)
+        let task = Task { await model.restoreSession() }
+        await waitUntil { provider.restore != nil }
+        provider.restore?.resume(throwing: URLError(.notConnectedToInternet)); provider.restore = nil
+        await task.value
+        XCTAssertEqual(model.identity.state, .signedOut); XCTAssertTrue(model.records.isEmpty)
+        XCTAssertNotNil(model.error); XCTAssertEqual(store.records.count, 1)
+    }
+
+    @MainActor func testRedirectMustMatchExactlyAndEmptyHTTPSHostIsRejected() throws {
+        var info: [String: Any] = ["FireseedIdentityEnvironment": "STAGING", "FireseedIdentityIssuer": "https://identity.example/oidc", "FireseedIdentityEndpoint": "https://identity.example", "FireseedIdentityClientID": "public", "FireseedIdentityRedirectURI": "com.fireseed.aiquicknote://oauth/callback", "FireseedIdentityPostLogoutRedirectURI": "com.fireseed.aiquicknote://oauth/signed-out"]
+        XCTAssertTrue(try XCTUnwrap(IdentityProviderConfiguration(info: info)).isUsable)
+        info["FireseedIdentityRedirectURI"] = "com.fireseed.aiquicknote://oauth/callback?extra=1"
+        XCTAssertFalse(try XCTUnwrap(IdentityProviderConfiguration(info: info)).isUsable)
+        info["FireseedIdentityRedirectURI"] = "com.fireseed.aiquicknote://oauth/callback"
+        info["FireseedIdentityEndpoint"] = "https:///"; info["FireseedIdentityIssuer"] = "https:///oidc"
+        XCTAssertFalse(try XCTUnwrap(IdentityProviderConfiguration(info: info)).isUsable)
+    }
+}
+#endif
+
 final class CoreTests: XCTestCase {
     #if canImport(UIKit) && !canImport(QuickNoteCore)
     @MainActor func testStagingAuthDiagnosticOmitsRawErrorMessage() {

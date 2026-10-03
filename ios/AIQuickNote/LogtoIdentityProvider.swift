@@ -35,10 +35,13 @@ struct IdentityProviderConfiguration {
               endpointURL.user == nil, endpointURL.password == nil, endpointURL.query == nil, endpointURL.fragment == nil,
               issuerURL.path == "/oidc", endpointURL.path.isEmpty || endpointURL.path == "/",
               issuerURL.scheme == endpointURL.scheme,
+              !(issuerURL.host ?? "").isEmpty,
               issuerURL.host?.lowercased() == endpointURL.host?.lowercased(),
               issuerURL.port == endpointURL.port,
               let redirect = URLComponents(string: redirectURI),
               let postLogout = URLComponents(string: postLogoutRedirectURI),
+              redirectURI == "com.fireseed.aiquicknote://oauth/callback",
+              postLogoutRedirectURI == "com.fireseed.aiquicknote://oauth/signed-out",
               redirect.scheme == "com.fireseed.aiquicknote",
               postLogout.scheme == redirect.scheme,
               redirect.host == "oauth", redirect.path == "/callback",
@@ -111,7 +114,10 @@ struct IdentityProviderConfiguration {
             _ = await client.clearCredentials()
             throw CancellationError()
         } catch {
+            _ = await client.clearCredentials()
             if Self.isUserCancelled(error) { throw CancellationError() }
+            let cause = ((error as? LogtoClientErrors.SignIn)?.innerError ?? error) as NSError
+            if cause.domain == NSURLErrorDomain { throw IdentityProviderError.networkUnavailable }
             if let identityError = error as? IdentityProviderError {
                 if configuration.environment == .staging, case .authenticationFailed = identityError {
                     throw IdentityProviderError.stagingAuthenticationFailed(stage: failureStage, errorType: "IdentityProviderError", domain: "Fireseed.Identity", code: 1)

@@ -110,4 +110,25 @@ final class NavigationRegressionTests: XCTestCase {
         XCTAssertTrue(records.firstMatch.waitForExistence(timeout: 5))
         XCTAssertEqual(records.count, 1)
     }
+
+    func testFirstSaveFromModuleSheetCanPresentLoginAndCancel() {
+        app.terminate()
+        app.launchArguments = ["--ui-identity-flow-tests", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launch()
+        let card = app.buttons["home.module.ledger"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10)); card.tap()
+        app.buttons["module.add"].tap()
+        let input = app.descendants(matching: .any)["module.compose.input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap(); input.typeText("Module draft")
+        app.buttons["module.compose.continue"].tap()
+        let save = app.buttons["review.save"]
+        XCTAssertTrue(save.waitForExistence(timeout: 5)); save.tap()
+        let login = app.buttons["identity.login.confirm"]
+        XCTAssertTrue(login.waitForExistence(timeout: 5))
+        app.buttons["identity.login.cancel"].tap()
+        XCTAssertTrue(save.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["review.rawInput"].exists)
+        save.tap(); XCTAssertTrue(login.waitForExistence(timeout: 5)); login.tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "record.")).firstMatch.waitForExistence(timeout: 10))
+    }
 }

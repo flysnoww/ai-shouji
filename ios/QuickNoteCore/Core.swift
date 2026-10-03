@@ -78,6 +78,15 @@ public struct Record: Identifiable, Codable, Hashable, Sendable {
         self.location = location; self.status = status
     }
 
+    public func applyingParsedContent(_ parsed: Record) -> Record {
+        var value = parsed
+        value.id = id; value.ownerID = ownerID; value.ownerIssuer = ownerIssuer
+        value.createdAt = createdAt; value.updatedAt = updatedAt; value.important = important
+        value.reminderEnabled = reminderEnabled; value.reminderLinked = reminderLinked
+        value.reminderExternalID = reminderExternalID; value.reminderState = reminderState
+        return value
+    }
+
     private enum CodingKeys: String, CodingKey { case id, ownerID, ownerIssuer, module, rawInput, content, important, tags, createdAt, updatedAt, merchant, amount, currency, amountItems, category, paymentMethod, occurredAt, dueAt, reminderEnabled, reminderLinked, reminderExternalID, reminderState, location, status }
     public init(from decoder: Decoder) throws { let box = try decoder.container(keyedBy: CodingKeys.self); let legacyAmount = try box.decodeIfPresent(Decimal.self, forKey: .amount), legacyCurrency = CurrencyCanonicalizer.canonical(try box.decodeIfPresent(String.self, forKey: .currency)); id = try box.decode(UUID.self, forKey: .id); ownerID = try box.decode(String.self, forKey: .ownerID); ownerIssuer = try box.decodeIfPresent(String.self, forKey: .ownerIssuer); module = try box.decode(Module.self, forKey: .module); rawInput = try box.decode(String.self, forKey: .rawInput); content = try box.decode(String.self, forKey: .content); important = try box.decode(Bool.self, forKey: .important); tags = try box.decode([String].self, forKey: .tags); createdAt = try box.decode(Date.self, forKey: .createdAt); updatedAt = try box.decode(Date.self, forKey: .updatedAt); merchant = try box.decodeIfPresent(String.self, forKey: .merchant); amount = legacyAmount; currency = legacyCurrency; amountItems = try box.decodeIfPresent([AmountItem].self, forKey: .amountItems) ?? legacyAmount.map { [AmountItem(value: $0, currency: legacyCurrency)] } ?? []; category = try box.decodeIfPresent(String.self, forKey: .category); paymentMethod = try box.decodeIfPresent(String.self, forKey: .paymentMethod); occurredAt = try box.decodeIfPresent(Date.self, forKey: .occurredAt); dueAt = try box.decodeIfPresent(Date.self, forKey: .dueAt); reminderEnabled = try box.decode(Bool.self, forKey: .reminderEnabled); reminderLinked = try box.decodeIfPresent(Bool.self, forKey: .reminderLinked) ?? false; reminderExternalID = try box.decodeIfPresent(String.self, forKey: .reminderExternalID); reminderState = try box.decodeIfPresent(ReminderState.self, forKey: .reminderState) ?? (reminderLinked ? .active : reminderEnabled ? .requested : .none); location = try box.decodeIfPresent(String.self, forKey: .location); status = try box.decodeIfPresent(TodoStatus.self, forKey: .status) }
 }
@@ -285,16 +294,19 @@ public protocol RecordStore: Sendable {
     func save(_ records: [Record]) throws
 }
 
-public enum CoreError: Error, Equatable { case identityRequired, emptyContent, recordNotFound, recordNotOwned, backupOwnerMismatch }
+public enum CoreError: Error, Equatable { case identityRequired, emptyContent, recordNotFound, recordNotOwned, backupOwnerMismatch, duplicateRecordID }
 
 public final class FileRecordStore: RecordStore, @unchecked Sendable {
     private let url: URL
     public init(url: URL) { self.url = url }
     public func load() throws -> [Record] {
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }
-        return try JSONDecoder().decode([Record].self, from: Data(contentsOf: url))
+        let records = try JSONDecoder().decode([Record].self, from: Data(contentsOf: url))
+        guard Set(records.map(\.id)).count == records.count else { throw CoreError.duplicateRecordID }
+        return records
     }
     public func save(_ records: [Record]) throws {
+        guard Set(records.map(\.id)).count == records.count else { throw CoreError.duplicateRecordID }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try JSONEncoder().encode(records).write(to: url, options: .atomic)
     }
@@ -313,7 +325,7 @@ public final class QuickNoteCore: @unchecked Sendable {
     public init(store: RecordStore, identity: IdentityGate) { self.store = store; self.identity = identity }
 
     @discardableResult public func save(_ draft: Record) throws -> Record {
-        guard let ownerID = identity.confirmedUserID else { throw CoreError.identityRequired }
+        guard let ownerID = identity.confirmedUserID, !ownerID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CoreError.identityRequired }
         guard !draft.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CoreError.emptyContent }
         let ownerIssuer = identity.confirmedIssuer
         var records = try store.load(), value = draft
@@ -375,8 +387,11 @@ public final class QuickNoteCore: @unchecked Sendable {
                 && query.tags.allSatisfy { record.tags.contains($0) }
                 && (query.category == nil || record.category == query.category || record.tags.contains(query.category!))
                 && (queryCurrency == nil || !comparableAmounts.isEmpty)
-                && (query.minimumAmount == nil || comparableAmounts.contains { query.minimumInclusive ? $0 >= query.minimumAmount! : $0 > query.minimumAmount! })
-                && (query.maximumAmount == nil || comparableAmounts.contains { query.maximumInclusive ? $0 <= query.maximumAmount! : $0 < query.maximumAmount! })
+                && ((query.minimumAmount == nil && query.maximumAmount == nil) || comparableAmounts.contains { amount in
+                    let aboveMinimum = query.minimumAmount.map { query.minimumInclusive ? amount >= $0 : amount > $0 } ?? true
+                    let belowMaximum = query.maximumAmount.map { query.maximumInclusive ? amount <= $0 : amount < $0 } ?? true
+                    return aboveMinimum && belowMaximum
+                })
                 && (query.dateStart == nil || ((record.occurredAt ?? record.dueAt ?? record.createdAt) >= query.dateStart!))
                 && (query.dateEnd == nil || ((record.occurredAt ?? record.dueAt ?? record.createdAt) < query.dateEnd!))
         }
@@ -394,6 +409,8 @@ public final class QuickNoteCore: @unchecked Sendable {
         let ownerIssuer = identity.confirmedIssuer
         guard restored.allSatisfy({ $0.ownerID == ownerID && $0.ownerIssuer == ownerIssuer }) else { throw CoreError.backupOwnerMismatch }
         var all = try store.load().filter { $0.ownerID != ownerID || $0.ownerIssuer != ownerIssuer }
+        guard Set(restored.map(\.id)).count == restored.count else { throw CoreError.duplicateRecordID }
+        guard Set(all.map(\.id)).isDisjoint(with: restored.map(\.id)) else { throw CoreError.recordNotOwned }
         all += restored.map { normalizeForModule($0) }
         try store.save(all)
     }
@@ -444,6 +461,7 @@ public enum ZipArchive {
             let method = archive.uint16(at: offset + 8), crc = archive.uint32(at: offset + 14), compressedSize = Int(archive.uint32(at: offset + 18)), uncompressedSize = Int(archive.uint32(at: offset + 22)), nameLength = Int(archive.uint16(at: offset + 26)), extraLength = Int(archive.uint16(at: offset + 28)), nameStart = offset + 30, dataStart = nameStart + nameLength + extraLength, end = dataStart + compressedSize
             guard end <= archive.count, let name = String(data: archive[nameStart..<(nameStart + nameLength)], encoding: .utf8) else { throw ArchiveError.invalidArchive }
             let compressed = Data(archive[dataStart..<end]), body: Data; if method == 0 { body = compressed } else if method == 8 { body = try inflate(compressed, expectedSize: uncompressedSize) } else { throw ArchiveError.invalidArchive }; guard body.count == uncompressedSize, crc32(body) == crc else { throw ArchiveError.invalidArchive }
+            guard result[name] == nil else { throw ArchiveError.invalidArchive }
             result[name] = body; offset = end
         }
         if let requiredEntry, result[requiredEntry] == nil { throw ArchiveError.invalidArchive }
@@ -451,7 +469,7 @@ public enum ZipArchive {
     }
 
     private static func crc32(_ data: Data) -> UInt32 { data.reduce(UInt32.max) { value, byte in var crc = value ^ UInt32(byte); for _ in 0..<8 { crc = (crc >> 1) ^ (crc & 1 == 1 ? 0xEDB88320 : 0) }; return crc } ^ UInt32.max }
-    private static func inflate(_ data: Data, expectedSize: Int) throws -> Data { guard expectedSize >= 0, expectedSize <= 50_000_000 else { throw ArchiveError.invalidArchive }; var output = Data(count: expectedSize); let decoded = output.withUnsafeMutableBytes { destination in data.withUnsafeBytes { source in compression_decode_buffer(destination.bindMemory(to: UInt8.self).baseAddress!, expectedSize, source.bindMemory(to: UInt8.self).baseAddress!, data.count, nil, COMPRESSION_ZLIB) } }; guard decoded == expectedSize else { throw ArchiveError.invalidArchive }; return output }
+    private static func inflate(_ data: Data, expectedSize: Int) throws -> Data { guard expectedSize >= 0, expectedSize <= 50_000_000 else { throw ArchiveError.invalidArchive }; guard !data.isEmpty else { throw ArchiveError.invalidArchive }; var output = Data(count: max(1, expectedSize)); let decoded = output.withUnsafeMutableBytes { destination in data.withUnsafeBytes { source in compression_decode_buffer(destination.bindMemory(to: UInt8.self).baseAddress!, max(1, expectedSize), source.bindMemory(to: UInt8.self).baseAddress!, data.count, nil, COMPRESSION_ZLIB) } }; guard decoded == expectedSize else { throw ArchiveError.invalidArchive }; return Data(output.prefix(expectedSize)) }
 }
 
 public enum ExportService {

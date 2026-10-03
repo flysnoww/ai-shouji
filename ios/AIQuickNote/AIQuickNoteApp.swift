@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import Speech
 import AVFoundation
 import PhotosUI
@@ -67,14 +68,16 @@ enum SkinError: Error { case malformedArchive, unsupportedSchema, invalidManifes
 
 private extension Color { init?(hex: String) { var value = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#")); guard value.count == 6 || value.count == 8 else { return nil }; if value.count == 6 { value += "FF" }; guard let raw = UInt64(value, radix: 16) else { return nil }; self.init(red: Double((raw >> 24) & 255) / 255, green: Double((raw >> 16) & 255) / 255, blue: Double((raw >> 8) & 255) / 255, opacity: Double(raw & 255) / 255) } }
 private struct FallingEffect: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let image: UIImage
     @State private var falling = false
-    var body: some View { GeometryReader { proxy in ForEach(0..<12, id: \.self) { i in let span = proxy.size.height + 100, start = CGFloat((i * 53) % 100) / 100 * span - 50; Image(uiImage: image).resizable().scaledToFit().frame(width: CGFloat(18 + i % 4 * 7)).opacity(0.55).rotationEffect(.degrees(falling ? Double(120 + i * 13) : Double(i * 17))).position(x: proxy.size.width * CGFloat((i * 37) % 100) / 100, y: falling ? start + span : start - span) } }.allowsHitTesting(false).onAppear { withAnimation(.linear(duration: 9).repeatForever(autoreverses: false)) { falling = true } } }
+    var body: some View { GeometryReader { proxy in ForEach(0..<12, id: \.self) { i in let span = proxy.size.height + 100, start = CGFloat((i * 53) % 100) / 100 * span - 50; Image(uiImage: image).resizable().scaledToFit().frame(width: CGFloat(18 + i % 4 * 7)).opacity(0.55).rotationEffect(.degrees(falling ? Double(120 + i * 13) : Double(i * 17))).position(x: proxy.size.width * CGFloat((i * 37) % 100) / 100, y: falling ? start + span : start - span) } }.allowsHitTesting(false).onAppear { guard !reduceMotion else { return }; withAnimation(.linear(duration: 9).repeatForever(autoreverses: false)) { falling = true } } }
 }
 
 @MainActor final class FireseedIdentityKit: IdentityGate, ObservableObject {
     @Published private(set) var state: IdentityState
     private let provider: any IdentityProvider
+    private var revision = UUID()
     var currentUser: FireseedUser? { if case .signedIn(let user) = state { user } else { nil } }
     var confirmedUserID: String? { currentUser?.stableUserID }
     var confirmedIssuer: String? { currentUser?.issuer }
@@ -86,17 +89,24 @@ private struct FallingEffect: View {
     }
 
     func restoreSession() async throws {
+        let request = UUID(); revision = request
         state = .resolving
-        do { state = try await provider.restoreSession().map { .signedIn($0) } ?? .signedOut }
-        catch { state = .signedOut; throw error }
+        do {
+            let user = try await provider.restoreSession()
+            guard revision == request else { throw CancellationError() }
+            state = user.map { .signedIn($0) } ?? .signedOut
+        } catch {
+            guard revision == request else { throw CancellationError() }
+            state = .signedOut; throw error
+        }
     }
 
     func authenticate() async throws -> FireseedUser { try await provider.signIn() }
-    func accept(_ user: FireseedUser) { state = .signedIn(user) }
-    func resolveSignedOut() { state = .signedOut }
+    func accept(_ user: FireseedUser) { revision = UUID(); state = .signedIn(user) }
+    func resolveSignedOut() { revision = UUID(); state = .signedOut }
 
     func signOut() async throws {
-        state = .signedOut
+        resolveSignedOut()
         try await provider.signOut()
     }
 }
@@ -117,9 +127,16 @@ enum ReminderServiceError: Error { case permissionDenied }
 
 @MainActor final class AppModel: ObservableObject {
     @Published var records: [Record] = []; @Published var error: String?; @Published var loginPresented = false
+    @Published private(set) var isAuthenticating = false
+    @Published private(set) var isSigningOut = false
+    @Published private(set) var isRestoringSession = false
+    private var identityObservation: AnyCancellable?
+    private var restoreTask: Task<Void, Never>?
     let identity: FireseedIdentityKit; let core: QuickNoteCore; let parser = DeterministicDraftParser(); let reminderService = ReminderService()
     private struct PendingSave { let id: UUID; let record: Record; let completion: () -> Void }
     private var pendingSave: PendingSave?
+    var hasPendingSave: Bool { pendingSave != nil }
+    var loginAfterSettings = false
     private var activeAuthRequestID: UUID?
     private var authTask: Task<Void, Never>?
     private var shouldRestoreSession = true
@@ -136,6 +153,7 @@ enum ReminderServiceError: Error { case permissionDenied }
             let identity = FireseedIdentityKit(provider: identityProvider ?? MockAuthProvider(defaults: testDefaults), initialState: initialState)
             self.identity = identity
             core = QuickNoteCore(store: suppliedStore ?? MemoryRecordStore(), identity: identity)
+            observeIdentity()
             if !identityFlow {
                 for index in 0..<25 {
                     let module = index < 22 ? Module.ledger : Module.allCases[index - 21]
@@ -152,6 +170,11 @@ enum ReminderServiceError: Error { case permissionDenied }
         let identity = FireseedIdentityKit(provider: provider)
         self.identity = identity
         core = QuickNoteCore(store: suppliedStore ?? FileRecordStore(url: folder.appendingPathComponent("records.json")), identity: identity)
+        observeIdentity()
+    }
+
+    private func observeIdentity() {
+        identityObservation = identity.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
     }
 
     static func defaultIdentityProvider(info: [String: Any] = Bundle.main.infoDictionary ?? [:]) -> any IdentityProvider {
@@ -159,10 +182,18 @@ enum ReminderServiceError: Error { case permissionDenied }
     }
 
     func restoreSession() async {
-        guard shouldRestoreSession, !didRestoreSession, identity.state == .resolving else { return }
+        guard shouldRestoreSession, !didRestoreSession, identity.state == .resolving, authTask == nil, !isSigningOut else { return }
         didRestoreSession = true
+        isRestoringSession = true
+        restoreTask = Task { [weak self] in guard let self else { return }; await performRestore() }
+        await restoreTask?.value
+        restoreTask = nil; isRestoringSession = false
+    }
+
+    private func performRestore() async {
         do { try await identity.restoreSession() }
-        catch { self.error = "无法恢复登录状态；本地记录仍保持隔离，请检查网络后重试。"; identity.resolveSignedOut() }
+        catch is CancellationError { return }
+        catch { self.error = "无法恢复登录状态；本地记录仍保持隔离，请检查网络后重新登录。" }
         reload()
         if let pendingSave {
             if identity.isAuthenticated { consumePendingSave(pendingSave.id) }
@@ -170,9 +201,19 @@ enum ReminderServiceError: Error { case permissionDenied }
         }
     }
 
-    func reload() { guard identity.state != .resolving else { records = []; return }; do { records = try core.records() } catch { self.error = error.localizedDescription } }
-    func save(_ value: Record) throws { var value = value; if value.reminderEnabled, value.reminderState == .none { value.reminderState = .requested }; let saved = try core.save(value); reload(); if saved.reminderEnabled, !saved.reminderLinked, linkingReminderIDs.insert(saved.id).inserted { Task { await linkReminder(saved) } } }
+    func reload() { guard identity.state != .resolving else { records = []; return }; do { records = try core.records() } catch { records = []; self.error = error.localizedDescription } }
+    func save(_ value: Record) throws {
+        var value = value
+        if value.reminderEnabled, value.reminderState != .missingExternalReminder,
+           let existing = try core.records().first(where: { $0.id == value.id }), existing.reminderLinked {
+            value.reminderLinked = true; value.reminderExternalID = existing.reminderExternalID; value.reminderState = .active
+        }
+        if value.reminderEnabled, value.reminderState == .none { value.reminderState = .requested }
+        let saved = try core.save(value); reload()
+        if saved.reminderEnabled, !saved.reminderLinked, linkingReminderIDs.insert(saved.id).inserted { Task { await linkReminder(saved) } }
+    }
     func saveOrRequestIdentity(_ value: Record, onSaved: @escaping () -> Void) {
+        guard !isSigningOut else { return }
         if identity.isAuthenticated { do { try save(value); onSaved() } catch { self.error = error.localizedDescription }; return }
         guard pendingSave == nil else { return }
         pendingSave = PendingSave(id: UUID(), record: value, completion: onSaved)
@@ -180,22 +221,28 @@ enum ReminderServiceError: Error { case permissionDenied }
     }
 
     func signIn() {
-        guard activeAuthRequestID == nil else { return }
+        guard authTask == nil, !isSigningOut, !isRestoringSession else { return }
         let requestID = UUID(); activeAuthRequestID = requestID
+        isAuthenticating = true
         authTask = Task { [weak self] in
             guard let self else { return }
+            defer { authTask = nil; isAuthenticating = false }
             do {
                 let user = try await identity.authenticate()
                 guard activeAuthRequestID == requestID else { return }
-                activeAuthRequestID = nil; authTask = nil
+                activeAuthRequestID = nil
                 identity.accept(user); loginPresented = false; reload()
                 if let pendingSave { consumePendingSave(pendingSave.id) }
             } catch is CancellationError {
                 guard activeAuthRequestID == requestID else { return }
-                activeAuthRequestID = nil; authTask = nil; pendingSave = nil; loginPresented = false
+                activeAuthRequestID = nil; pendingSave = nil; loginPresented = false
             } catch {
                 guard activeAuthRequestID == requestID else { return }
-                activeAuthRequestID = nil; authTask = nil; pendingSave = nil; loginPresented = false
+                activeAuthRequestID = nil; pendingSave = nil; loginPresented = false
+                if case IdentityProviderError.networkUnavailable = error {
+                    self.error = "网络连接失败，请检查网络后重新登录。"
+                    return
+                }
                 if case let IdentityProviderError.stagingAuthenticationFailed(stage, errorType, domain, code) = error {
                     self.error = "登录未完成（STAGING诊断）\n阶段：\(stage)\n错误类型：\(errorType)\n域：\(domain.isEmpty ? "-" : domain) · 代码：\(code)"
                 } else {
@@ -213,13 +260,20 @@ enum ReminderServiceError: Error { case permissionDenied }
     }
 
     func cancelAuthentication() {
-        authTask?.cancel(); authTask = nil; activeAuthRequestID = nil
+        authTask?.cancel(); activeAuthRequestID = nil
         pendingSave = nil; loginPresented = false
     }
 
     func signOut() {
+        guard !isSigningOut else { return }
+        isSigningOut = true
         cancelAuthentication(); records = []; identity.resolveSignedOut()
-        Task { do { try await identity.signOut() } catch { self.error = "退出登录失败。" }; reload() }
+        let pendingAuth = authTask, pendingRestore = restoreTask
+        Task {
+            await pendingAuth?.value; await pendingRestore?.value
+            do { try await identity.signOut() } catch { self.error = "本机已退出；服务端会话退出未完成，请检查网络。" }
+            isSigningOut = false; reload()
+        }
     }
 
     func exportData() throws -> Data {
@@ -240,11 +294,11 @@ enum ReminderServiceError: Error { case permissionDenied }
         defer { linkingReminderIDs.remove(saved.id) }
         do {
             let externalID = try await reminderService.create(for: saved)
-            guard var latest = try core.records().first(where: { $0.id == saved.id }), latest.reminderEnabled else { return }
+            guard var latest = try core.records().first(where: { $0.id == saved.id && $0.ownerID == saved.ownerID && $0.ownerIssuer == saved.ownerIssuer }), latest.reminderEnabled else { return }
             latest.reminderExternalID = externalID; latest.reminderLinked = true; latest.reminderState = .active
             _ = try core.save(latest); reload()
         } catch {
-            guard var latest = try? core.records().first(where: { $0.id == saved.id }), latest.reminderEnabled else { return }
+            guard var latest = try? core.records().first(where: { $0.id == saved.id && $0.ownerID == saved.ownerID && $0.ownerIssuer == saved.ownerIssuer }), latest.reminderEnabled else { return }
             latest.reminderLinked = false; latest.reminderExternalID = nil
             latest.reminderState = reminderService.status == .denied || reminderService.status == .restricted ? .permissionDenied : .requested
             _ = try? core.save(latest); reload()
@@ -257,10 +311,11 @@ enum ReminderServiceError: Error { case permissionDenied }
 
 struct RootView: View {
     @EnvironmentObject private var model: AppModel; @Environment(\.openURL) private var openURL
-    var body: some View { NavigationStack { HomeView() }.tint(AppTheme.accent).sheet(isPresented: $model.loginPresented, onDismiss: { model.cancelAuthentication() }) { LoginView(onSignIn: model.signIn, onCancel: model.cancelAuthentication) }.task { await model.restoreSession() }.alert("操作失败", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { if model.error?.contains("权限已关闭") == true { Button("前往设置") { if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) } } }; Button("确定") {} } message: { Text(LocalizedStringKey(model.error ?? "未知错误")) } }
+    var body: some View { NavigationStack { HomeView() }.tint(AppTheme.accent).sheet(isPresented: Binding(get: { model.loginPresented && !model.hasPendingSave }, set: { if !$0 { model.loginPresented = false } }), onDismiss: { model.cancelAuthentication() }) { LoginView(onSignIn: model.signIn, onCancel: model.cancelAuthentication) }.task { await model.restoreSession() }.alert("操作失败", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { if model.error?.contains("权限已关闭") == true { Button("前往设置") { if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) } } }; Button("确定") {} } message: { Text(LocalizedStringKey(model.error ?? "未知错误")) } }
 }
 
 struct LoginView: View {
+    @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
     let onSignIn: () -> Void
     let onCancel: () -> Void
@@ -270,7 +325,7 @@ struct LoginView: View {
                 Image(systemName: "person.crop.circle.badge.checkmark").font(.system(size: 58)).foregroundStyle(.blue)
                 Text("登录 AI随手记").font(.largeTitle.bold())
                 Text("登录只用于确认本地数据归属。\n登录不会自动上传、备份或分享你的记录。").multilineTextAlignment(.center).foregroundStyle(.secondary)
-                Button("继续登录", action: onSignIn).buttonStyle(.borderedProminent).controlSize(.large).accessibilityIdentifier("identity.login.confirm")
+                if model.isAuthenticating || model.isSigningOut || model.isRestoringSession { ProgressView("正在处理登录状态…") }; Button("继续登录", action: onSignIn).disabled(model.isAuthenticating || model.isSigningOut || model.isRestoringSession).buttonStyle(.borderedProminent).controlSize(.large).accessibilityIdentifier("identity.login.confirm")
             }.padding(24).background(.white.opacity(0.78), in: RoundedRectangle(cornerRadius: 30)).padding(20) }
             .navigationTitle("身份确认").navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("取消") { onCancel(); dismiss() }.accessibilityIdentifier("identity.login.cancel") }
@@ -308,7 +363,7 @@ struct SettingsView: View {
     @EnvironmentObject private var model: AppModel; @Environment(\.dismiss) private var dismiss; @Environment(\.openURL) private var openURL
     @AppStorage("language.display") private var displayLanguage = DisplayLanguage.system.rawValue; @AppStorage("language.speech") private var speechLanguage = SpeechInputLanguage.simplifiedChinese.rawValue
     var body: some View { NavigationStack { Form {
-        Section("Account") { if let user = model.identity.currentUser { LabeledContent("用户名", value: user.displayName ?? "Fireseed User"); Button("退出登录", role: .destructive) { model.signOut(); dismiss() } } else { Text("未登录"); Button("登录") { dismiss(); model.loginPresented = true } } }
+        Section("Account") { if let user = model.identity.currentUser { LabeledContent("用户名", value: user.displayName ?? "Fireseed User"); Button("退出登录", role: .destructive) { model.signOut(); dismiss() } } else { Text("未登录"); Button("登录") { model.loginAfterSettings = true; dismiss() } } }
         Section("Language") { Picker("Display Language", selection: $displayLanguage) { ForEach(DisplayLanguage.allCases, id: \.rawValue) { Text($0.title).tag($0.rawValue) } }; Picker("Speech Input Language", selection: $speechLanguage) { ForEach(SpeechInputLanguage.allCases, id: \.rawValue) { Text($0.title).tag($0.rawValue) } } }
         Section("Appearance & Skins") { NavigationLink("外观与皮肤") { SkinSettingsView() } }
         Section("Data & Backup") { NavigationLink("导出、备份与恢复") { DataBackupView() } }
@@ -319,7 +374,7 @@ struct SettingsView: View {
 
 struct SkinSettingsView: View {
     @EnvironmentObject private var skin: SkinManager; @EnvironmentObject private var model: AppModel; @State private var importing = false; @State private var pending: Data?; @State private var pendingName = ""; @State private var confirming = false
-    var body: some View { List { Section("Current Skin") { Text(skin.current.name) }; Section("Built-in") { Button("Default / Lake Light") { try? skin.apply(SkinDefinition.default.id) } }; Section("Installed Skins") { ForEach(skin.installed) { item in HStack { Text(item.name); Spacer(); if item.id == skin.current.id { Image(systemName: "checkmark") } }.contentShape(Rectangle()).onTapGesture { try? skin.apply(item.id) } }; Button("Import Skin File") { importing = true } } }.navigationTitle("外观与皮肤").fileImporter(isPresented: $importing, allowedContentTypes: [skinContentType, .zip]) { result in do { let url = try result.get(), scoped = url.startAccessingSecurityScopedResource(); defer { if scoped { url.stopAccessingSecurityScopedResource() } }; let data = try Data(contentsOf: url), validated = try SkinManager.validate(data); pending = data; pendingName = validated.0.name; confirming = true } catch { model.error = "皮肤包无效，当前皮肤未更改。" } }.confirmationDialog("预览：\(pendingName)", isPresented: $confirming, titleVisibility: .visible) { Button("Apply") { guard let pending else { return }; do { try skin.importSkin(pending) } catch { model.error = "皮肤安装失败，已回退默认皮肤。" } }; Button("取消", role: .cancel) {} } }
+    var body: some View { List { Section("Current Skin") { Text(skin.current.name) }; Section("Built-in") { Button("Default / Lake Light") { try? skin.apply(SkinDefinition.default.id) } }; Section("Installed Skins") { ForEach(skin.installed) { item in HStack { Text(item.name); Spacer(); if item.id == skin.current.id { Image(systemName: "checkmark") } }.contentShape(Rectangle()).onTapGesture { do { try skin.apply(item.id) } catch { model.error = "皮肤读取失败，请重新导入。" } } }; Button("Import Skin File") { importing = true } } }.navigationTitle("外观与皮肤").fileImporter(isPresented: $importing, allowedContentTypes: [skinContentType, .zip]) { result in do { let url = try result.get(), scoped = url.startAccessingSecurityScopedResource(); defer { if scoped { url.stopAccessingSecurityScopedResource() } }; let data = try Data(contentsOf: url), validated = try SkinManager.validate(data); pending = data; pendingName = validated.0.name; confirming = true } catch { model.error = "皮肤包无效，当前皮肤未更改。" } }.confirmationDialog("预览：\(pendingName)", isPresented: $confirming, titleVisibility: .visible) { Button("Apply") { guard let pending else { return }; do { try skin.importSkin(pending) } catch { model.error = "皮肤安装失败，已回退默认皮肤。" } }; Button("取消", role: .cancel) {} } }
 }
 
 struct SharePrivacyOptions: Equatable { var showAmount = true; var showDateTime = true; var showTags = true; var showMerchantOrLocation = true }
@@ -339,9 +394,10 @@ private struct ShareCardView: View {
 
 private struct ShareFile: Identifiable { let id = UUID(); let url: URL }
 struct ShareOptionsView: View {
+    @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss; @State private var options = SharePrivacyOptions(); @State private var file: ShareFile?; let records: [Record]; var pageLabel: String? = nil
     var body: some View { NavigationStack { Form { Toggle("显示金额", isOn: $options.showAmount); Toggle("显示日期时间", isOn: $options.showDateTime); Toggle("显示标签", isOn: $options.showTags); Toggle("显示商家或地点", isOn: $options.showMerchantOrLocation); Button("生成 PNG 并分享") { share() }.buttonStyle(.borderedProminent).disabled(records.isEmpty) }.navigationTitle(LocalizedStringKey(records.count == 1 ? "分享记录" : "分享搜索摘要")).toolbar { Button("取消") { dismiss() } }.sheet(item: $file) { ShareSheet(items: [$0.url]) } } }
-    private func share() { guard let png = ShareCardRenderer.png(records: records, options: options, pageLabel: pageLabel) else { return }; let url = FileManager.default.temporaryDirectory.appendingPathComponent("AIQuickNote-Share-\(UUID().uuidString).png"); do { try png.write(to: url, options: .atomic); file = ShareFile(url: url) } catch {} }
+    private func share() { guard let png = ShareCardRenderer.png(records: records, options: options, pageLabel: pageLabel) else { model.error = "分享图片生成失败，请重试。"; return }; let url = FileManager.default.temporaryDirectory.appendingPathComponent("AIQuickNote-Share-\(UUID().uuidString).png"); do { try png.write(to: url, options: .atomic); file = ShareFile(url: url) } catch { model.error = "分享文件生成失败，请重试。" } }
 }
 
 struct ShareSheet: UIViewControllerRepresentable { let items: [Any]; func makeUIViewController(context: Context) -> UIActivityViewController { UIActivityViewController(activityItems: items, applicationActivities: nil) }; func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {} }
@@ -356,9 +412,9 @@ struct HomeView: View {
             .navigationDestination(isPresented: Binding(get: { query != nil }, set: { if !$0 { query = nil } })) { SearchView(initialQuery: query ?? RecordQuery()) }
             .confirmationDialog("添加图片", isPresented: $attachmentMenu) { Button("拍照") { if UIImagePickerController.isSourceTypeAvailable(.camera) { camera = true } else { model.error = "当前设备没有可用相机。" } }; Button("从相册选择") { photos = true }; Button("取消", role: .cancel) {} }
             .photosPicker(isPresented: $photos, selection: $photo, matching: .images).sheet(isPresented: $camera) { CameraPicker() }
-            .sheet(isPresented: $accountPresented) { SettingsView() }
+            .sheet(isPresented: $accountPresented, onDismiss: { if model.loginAfterSettings { model.loginAfterSettings = false; model.loginPresented = true } }) { SettingsView() }
             .onAppear { model.reload(); focused = nil }.onDisappear { focused = nil; speech.cancel() }.onChange(of: scenePhase) { if $0 != .active { speech.cancel() } }
-            .onChange(of: speech.transcript) { text = $0 }.onChange(of: speech.finishedTranscript) { if $0 != nil { submit() } }.onChange(of: speech.error) { if let value = $0 { model.error = value } }
+            .onChange(of: photo) { if photo != nil { model.error = "当前版本尚不支持保存图片附件。"; photo = nil } }.onChange(of: speech.transcript) { text = $0 }.onChange(of: speech.finishedTranscript) { if $0 != nil { submit() } }.onChange(of: speech.error) { if let value = $0 { model.error = value } }
     }
     private var captureBar: some View { HStack(spacing: 12) {
         Button { focused = nil; speech.isRecording ? speech.stop() : speech.start() } label: { Image(systemName: speech.isRecording ? "stop.fill" : "mic.fill").font(.system(size: 34, weight: .semibold)).frame(width: 84, height: 84).background(speech.isRecording ? AnyShapeStyle(.red) : AnyShapeStyle(LinearGradient(colors: [.blue.opacity(0.65), .cyan.opacity(0.45)], startPoint: .topLeading, endPoint: .bottomTrailing))).foregroundStyle(.white).clipShape(Circle()).overlay(Circle().stroke(.white.opacity(0.9), lineWidth: 1)).shadow(color: .blue.opacity(0.3), radius: 16, y: 7) }.accessibilityLabel("语音输入")
@@ -373,6 +429,7 @@ struct ModuleCard: View {
     @Environment(\.locale) private var locale
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @GestureState(resetTransaction: Transaction(animation: .spring(response: 0.32, dampingFraction: 0.8))) private var touch: CGPoint?
+    @ScaledMetric(relativeTo: .body) private var cardHeight = 232.0
     let module: Module
     let records: [Record]
 
@@ -421,29 +478,29 @@ struct ModuleCard: View {
             .simultaneousGesture(DragGesture(minimumDistance: 12).updating($touch) { value, state, _ in
                 state = CGPoint(x: min(max(value.location.x, 0), geometry.size.width), y: min(max(value.location.y, 0), geometry.size.height))
             })
-        }.frame(height: 232)
+        }.frame(height: cardHeight)
     }
 }
 
 struct ReviewView: View {
     @EnvironmentObject private var model: AppModel; @Environment(\.dismiss) private var dismiss; @Environment(\.scenePhase) private var scenePhase; @StateObject private var speech = SpeechInput(); @State var draft: Record; @State private var remaining: [Record]; @State private var searchQuery: RecordQuery?; @State private var voicePrefix = ""; @State private var saveRequestID: UUID?; let onSaved: () -> Void
     init(draft: Record, followingDrafts: [Record] = [], onSaved: @escaping () -> Void) { _draft = State(initialValue: draft); _remaining = State(initialValue: followingDrafts); self.onSaved = onSaved }
-    var body: some View { RecordForm(record: $draft, showRawInput: true, saveTitle: "确认保存", onSave: save, onSearch: search, onReparse: { reparse() }, onVoice: toggleVoice, isRecording: speech.isRecording, voiceLabel: speech.statusText).navigationTitle("确认记录").navigationBarTitleDisplayMode(.inline).navigationDestination(isPresented: Binding(get: { searchQuery != nil }, set: { if !$0 { searchQuery = nil } })) { SearchView(initialQuery: searchQuery ?? RecordQuery()) }.task(id: draft.rawInput) { try? await Task.sleep(for: .milliseconds(400)); guard !Task.isCancelled else { return }; await parseCurrentInput() }.onChange(of: speech.transcript) { let value = $0.trimmed; guard !value.isEmpty else { return }; draft.rawInput = [voicePrefix, value].filter { !$0.isEmpty }.joined(separator: "，") }.onChange(of: speech.error) { if let value = $0 { model.error = value } }.onDisappear { speech.cancel() }.onChange(of: scenePhase) { if $0 != .active { speech.cancel() } } }
+    var body: some View { RecordForm(record: $draft, showRawInput: true, saveTitle: "确认保存", onSave: save, onSearch: search, onReparse: { reparse() }, onVoice: toggleVoice, isRecording: speech.isRecording, voiceLabel: speech.statusText).navigationTitle("确认记录").navigationBarTitleDisplayMode(.inline).sheet(isPresented: Binding(get: { model.loginPresented && model.hasPendingSave }, set: { if !$0 { model.cancelAuthentication() } }), onDismiss: { model.cancelAuthentication() }) { LoginView(onSignIn: model.signIn, onCancel: model.cancelAuthentication) }.navigationDestination(isPresented: Binding(get: { searchQuery != nil }, set: { if !$0 { searchQuery = nil } })) { SearchView(initialQuery: searchQuery ?? RecordQuery()) }.task(id: draft.rawInput) { try? await Task.sleep(for: .milliseconds(400)); guard !Task.isCancelled else { return }; await parseCurrentInput() }.onChange(of: speech.transcript) { let value = $0.trimmed; guard !value.isEmpty else { return }; draft.rawInput = [voicePrefix, value].filter { !$0.isEmpty }.joined(separator: "，") }.onChange(of: speech.error) { if let value = $0 { model.error = value } }.onDisappear { speech.cancel() }.onChange(of: scenePhase) { if $0 != .active { speech.cancel() } } }
     private func save(_ value: Record) { let requestID = UUID(); saveRequestID = requestID; model.saveOrRequestIdentity(value) { guard saveRequestID == requestID else { return }; saveRequestID = nil; if remaining.isEmpty { onSaved(); dismiss() } else { draft = remaining.removeFirst() } } }
     private func search(_ value: Record) { draft = value; searchQuery = RecordQuery(keyword: value.merchant ?? value.paymentMethod ?? value.content, modules: [value.module], importantOnly: value.important, tags: value.tags) }
     private func reparse() { Task { await parseCurrentInput() } }
     private func toggleVoice() { if speech.isRecording { speech.stop() } else { voicePrefix = draft.rawInput.trimmed; speech.start() } }
-    private func parseCurrentInput() async { let input = draft.rawInput.trimmed; guard !input.isEmpty else { return }; do { if case .create(var value) = try await model.parser.parse(input) { value.id = draft.id; value.ownerID = draft.ownerID; value.createdAt = draft.createdAt; draft = value } } catch { model.error = "重新解析失败，已保留当前内容。" } }
+    private func parseCurrentInput() async { let input = draft.rawInput.trimmed; guard !input.isEmpty else { return }; do { if case .create(var value) = try await model.parser.parse(input) { guard !Task.isCancelled, draft.rawInput.trimmed == input else { return }; value.id = draft.id; value.ownerID = draft.ownerID; value.ownerIssuer = draft.ownerIssuer; value.createdAt = draft.createdAt; draft = value } } catch { model.error = "重新解析失败，已保留当前内容。" } }
 }
 
 struct ModuleListView: View {
     @EnvironmentObject private var model: AppModel; @State private var adding = false; @State private var selectedRecord: Record?; let module: Module
-    var body: some View { List(model.records.filter { $0.module == module }) { record in Button { selectedRecord = record } label: { RecordRow(record: record).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityIdentifier("record.\(record.id.uuidString)").listRowBackground(Color.white.opacity(0.78)) }.listStyle(.insetGrouped).scrollContentBackground(.hidden).scrollDismissesKeyboard(.interactively).background(LakeBackground()).navigationTitle(LocalizedStringKey(module.title)).toolbar { Button { adding = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $adding) { NavigationStack { ModuleComposerView(module: module) } }.sheet(item: $selectedRecord) { record in DetailSheet(record: record) }.overlay { if model.records.allSatisfy({ $0.module != module }) { if let image = SkinManager.shared.image("emptyStateDecoration") { ContentUnavailableView { Label("暂无记录", systemImage: module.icon) } description: { Image(uiImage: image).resizable().scaledToFit().frame(width: 150, height: 150) } } else { ContentUnavailableView("暂无记录", systemImage: module.icon) } } }.onAppear { model.reload() } }
+    var body: some View { List(model.records.filter { $0.module == module }) { record in Button { selectedRecord = record } label: { RecordRow(record: record).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityIdentifier("record.\(record.id.uuidString)").listRowBackground(Color.white.opacity(0.78)) }.listStyle(.insetGrouped).scrollContentBackground(.hidden).scrollDismissesKeyboard(.interactively).background(LakeBackground()).navigationTitle(LocalizedStringKey(module.title)).toolbar { Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("新建记录").accessibilityIdentifier("module.add") }.sheet(isPresented: $adding) { NavigationStack { ModuleComposerView(module: module) } }.sheet(item: $selectedRecord) { record in DetailSheet(record: record) }.overlay { if model.records.allSatisfy({ $0.module != module }) { if let image = SkinManager.shared.image("emptyStateDecoration") { ContentUnavailableView { Label("暂无记录", systemImage: module.icon) } description: { Image(uiImage: image).resizable().scaledToFit().frame(width: 150, height: 150) } } else { ContentUnavailableView("暂无记录", systemImage: module.icon) } } }.onAppear { model.reload() } }
 }
 
 struct ModuleComposerView: View {
     @Environment(\.dismiss) private var dismiss; @Environment(\.locale) private var locale; @State private var text = ""; @State private var draft: Record?; @FocusState private var focused: Bool; let module: Module
-    var body: some View { VStack { TextField(locale.language.languageCode?.identifier == "zh" ? "输入一条\(module.title)记录" : "Enter a \(AppLocalization.moduleTitle(module, locale: locale).lowercased()) record", text: $text, axis: .vertical).focused($focused).submitLabel(.done).onSubmit { focused = false }.textFieldStyle(.roundedBorder).padding(); Button("继续") { focused = false; draft = Record(module: module, rawInput: text) }.buttonStyle(.borderedProminent).disabled(text.trimmed.isEmpty); Spacer() }.background(LakeBackground().onTapGesture { focused = false }).navigationTitle(locale.language.languageCode?.identifier == "zh" ? "新建\(module.title)" : "New \(AppLocalization.moduleTitle(module, locale: locale))").toolbar { Button("取消") { focused = false; dismiss() } }.navigationDestination(item: $draft) { ReviewView(draft: $0) { dismiss() } } }
+    var body: some View { VStack { TextField(locale.language.languageCode?.identifier == "zh" ? "输入一条\(module.title)记录" : "Enter a \(AppLocalization.moduleTitle(module, locale: locale).lowercased()) record", text: $text, axis: .vertical).focused($focused).submitLabel(.done).onSubmit { focused = false }.textFieldStyle(.roundedBorder).accessibilityIdentifier("module.compose.input").padding(); Button("继续") { focused = false; draft = Record(module: module, rawInput: text) }.buttonStyle(.borderedProminent).disabled(text.trimmed.isEmpty).accessibilityIdentifier("module.compose.continue"); Spacer() }.background(LakeBackground().onTapGesture { focused = false }).navigationTitle(locale.language.languageCode?.identifier == "zh" ? "新建\(module.title)" : "New \(AppLocalization.moduleTitle(module, locale: locale))").toolbar { Button("取消") { focused = false; dismiss() } }.navigationDestination(item: $draft) { ReviewView(draft: $0) { dismiss() } } }
 }
 
 struct SearchView: View {
@@ -457,7 +514,7 @@ struct SearchView: View {
     }.padding(16).background(Color.clear.contentShape(Rectangle()).onTapGesture { focused = nil }) }.scrollDismissesKeyboard(.interactively).background(LakeBackground(lightweight: true)).navigationTitle("搜索").navigationBarTitleDisplayMode(.inline).sheet(item: $selectedRecord) { record in DetailSheet(record: record) }.onAppear { focused = nil; search(); currentPage = Pagination.clampedPage(currentPage, itemCount: results.count) }.onDisappear { focused = nil }.task(id: keyword) { try? await Task.sleep(for: .milliseconds(250)); guard !Task.isCancelled, keyword != lastSearchedKeyword else { return }; lastSearchedKeyword = keyword; currentPage = 0; search() }.onChange(of: modules) { currentPage = 0; search() }.onChange(of: important) { currentPage = 0; search() }.onChange(of: model.records) { currentPage = 0; search() }.toolbar { ToolbarItem(placement: .topBarTrailing) { Button { focused = nil; sharePresented = true } label: { Label("分享摘要", systemImage: "square.and.arrow.up") }.disabled(results.isEmpty) }; ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("完成") { focused = nil } } }.sheet(isPresented: $sharePresented) { ShareOptionsView(records: currentPageResults, pageLabel: pageLabel) } }
     private var totalKeys: [String] { totals.keys.sorted() }
     private var pageCount: Int { Pagination.pageCount(itemCount: results.count) }; private var currentPageResults: [Record] { Pagination.page(results, index: currentPage) }; private var pageLabel: String { "Page \(currentPage + 1) / \(pageCount)" }
-    private var pageControls: some View { VStack(spacing: 7) { HStack { Button { currentPage -= 1 } label: { Image(systemName: "chevron.left") }.disabled(currentPage == 0); Spacer(); Text("\(currentPage + 1) / \(pageCount)").font(.subheadline.monospacedDigit()).accessibilityIdentifier("search.page"); Spacer(); Button { currentPage += 1 } label: { Image(systemName: "chevron.right") }.disabled(currentPage + 1 >= pageCount) }; ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 7) { ForEach(0..<pageCount, id: \.self) { page in Button("\(page + 1)") { currentPage = page }.accessibilityIdentifier("search.page.\(page + 1)").buttonStyle(.borderedProminent).tint(page == currentPage ? .blue : .gray.opacity(0.28)).disabled(page == currentPage) } } } }.padding(.vertical, 4) }
+    private var pageControls: some View { VStack(spacing: 7) { HStack { Button { currentPage -= 1 } label: { Image(systemName: "chevron.left").frame(minWidth: 44, minHeight: 44) }.accessibilityLabel("上一页").disabled(currentPage == 0); Spacer(); Text("\(currentPage + 1) / \(pageCount)").font(.subheadline.monospacedDigit()).accessibilityIdentifier("search.page"); Spacer(); Button { currentPage += 1 } label: { Image(systemName: "chevron.right").frame(minWidth: 44, minHeight: 44) }.accessibilityLabel("下一页").disabled(currentPage + 1 >= pageCount) }; ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 7) { ForEach(0..<pageCount, id: \.self) { page in Button("\(page + 1)") { currentPage = page }.accessibilityIdentifier("search.page.\(page + 1)").buttonStyle(.borderedProminent).tint(page == currentPage ? .blue : .gray.opacity(0.28)).disabled(page == currentPage) } } } }.padding(.vertical, 4) }
     private var filterSummary: String { let chinese = locale.language.languageCode?.identifier == "zh"; return [dateStart == nil ? nil : (chinese ? "日期范围" : "Date Range"), minimumAmount.map { "\(chinese ? "金额" : "Amount") \(minimumInclusive ? "≥" : ">") \($0)" }, maximumAmount.map { "\(chinese ? "金额" : "Amount") \(maximumInclusive ? "≤" : "<") \($0)" }, currency, category, tags.isEmpty ? nil : tags.joined(separator: chinese ? "、" : ", ")].compactMap { $0 }.joined(separator: " · ") }
     private func search() { let query = RecordQuery(keyword: keyword, modules: modules, importantOnly: important, tags: tags, dateStart: dateStart, dateEnd: dateEnd, minimumAmount: minimumAmount, minimumInclusive: minimumInclusive, maximumAmount: maximumAmount, maximumInclusive: maximumInclusive, currency: currency, category: category); results = QuickNoteCore.search(query, in: model.records); totals = QuickNoteCore.numericTotals(in: results, currency: query.effectiveCurrency) }
     private func searchCard<Content: View>(_ title: String, _ icon: String, _ color: Color, @ViewBuilder content: () -> Content) -> some View { VStack(alignment: .leading, spacing: 15) { HStack { Image(systemName: icon).foregroundStyle(color).frame(width: 42, height: 42).background(color.opacity(0.13), in: RoundedRectangle(cornerRadius: 13)); Text(LocalizedStringKey(title)).font(.title2.bold()).foregroundStyle(AppTheme.primary); Spacer() }; content() }.frame(maxWidth: .infinity, alignment: .leading).padding(18).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 28)).background(color.opacity(0.035), in: RoundedRectangle(cornerRadius: 28)).overlay(RoundedRectangle(cornerRadius: 28).stroke(.white.opacity(0.95), lineWidth: 1.2)).shadow(color: color.opacity(0.15), radius: 16, y: 8) }
@@ -478,7 +535,7 @@ struct DetailSheet: View {
             .presentationBackgroundInteraction(.disabled)
             .presentationContentInteraction(.scrolls)
             .onChange(of: model.records) {
-                guard model.records.contains(where: { $0.id == record.id && $0.ownerID == record.ownerID }) else { dismiss(); return }
+                guard model.records.contains(where: { $0.id == record.id && $0.ownerID == record.ownerID && $0.ownerIssuer == record.ownerIssuer }) else { dismiss(); return }
             }
     }
 }
@@ -491,14 +548,14 @@ struct DetailView: View {
     private func save(_ value: Record) { do { try model.save(value); record = value } catch { model.error = error.localizedDescription } }
     private func saveAndDismiss(_ value: Record) { do { try model.save(value); record = value; dismiss() } catch { model.error = error.localizedDescription } }
     private func export() { do { exportDocument = DataDocument(try ExportService.makeExport(records: [record])); exporting = true } catch { model.error = error.localizedDescription } }
-    private func reparseAndSave() async { let raw = record.rawInput.trimmed; guard !raw.isEmpty else { return }; do { if case .create(var parsed) = try await model.parser.parse(raw) { parsed.id = record.id; parsed.ownerID = record.ownerID; parsed.createdAt = record.createdAt; parsed.important = record.important; lastParsedRaw = raw; save(parsed) } } catch { model.error = "重新解析失败，已保留当前记录。" } }
+    private func reparseAndSave() async { let raw = record.rawInput.trimmed; guard !raw.isEmpty else { return }; do { if case .create(var parsed) = try await model.parser.parse(raw) { guard !Task.isCancelled, record.rawInput.trimmed == raw else { return }; parsed = record.applyingParsedContent(parsed); lastParsedRaw = raw; save(parsed) } } catch { model.error = "重新解析失败，已保留当前记录。" } }
 }
 
 struct RecordForm: View {
     @EnvironmentObject private var model: AppModel; @Binding var record: Record; let showRawInput: Bool; let showsDetailSummary: Bool; let saveTitle: String; let onSave: (Record) -> Void; let onSearch: ((Record) -> Void)?; let onReparse: (() -> Void)?; let onVoice: (() -> Void)?; let onAutoSave: ((Record) -> Void)?; let isRecording: Bool; let voiceLabel: String
     @State private var tags: String; @State private var amount: String; @State private var attachmentMenu = false; @State private var photos = false; @State private var camera = false; @State private var photo: PhotosPickerItem?; @FocusState private var focused: AppFocus?
     init(record: Binding<Record>, showRawInput: Bool, showsDetailSummary: Bool = false, saveTitle: String = "保存", onSave: @escaping (Record) -> Void, onSearch: ((Record) -> Void)? = nil, onReparse: (() -> Void)? = nil, onVoice: (() -> Void)? = nil, onAutoSave: ((Record) -> Void)? = nil, isRecording: Bool = false, voiceLabel: String = "语音补充") { _record = record; self.showRawInput = showRawInput; self.showsDetailSummary = showsDetailSummary; self.saveTitle = saveTitle; self.onSave = onSave; self.onSearch = onSearch; self.onReparse = onReparse; self.onVoice = onVoice; self.onAutoSave = onAutoSave; self.isRecording = isRecording; self.voiceLabel = voiceLabel; _tags = State(initialValue: record.wrappedValue.tags.joined(separator: ", ")); _amount = State(initialValue: record.wrappedValue.amount.map(String.init(describing:)) ?? "") }
-    var body: some View { ScrollView { VStack(spacing: 16) { if showsDetailSummary { detailSummary }; card { Picker("模块", selection: $record.module) { ForEach(Module.allCases) { Label(LocalizedStringKey($0.title), systemImage: $0.icon).tag($0) } }.pickerStyle(.segmented) }; if showRawInput { card(title: "记录原文", icon: "square.and.pencil", color: .blue, trailing: onReparse == nil ? nil : { focused = nil; onReparse?() }) { TextField("记录原文", text: $record.rawInput, axis: .vertical).focused($focused, equals: .raw).font(.body).lineLimit(3...8).submitLabel(.done).onSubmit { focused = nil; autoSave() }.accessibilityIdentifier("review.rawInput") } }; card(title: "内容", icon: "sparkles", color: .purple) { Text(record.content).font(.body).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }; HStack(alignment: .top, spacing: 12) { card(title: "标签", icon: "tag.fill", color: .purple) { TextField("逗号分隔", text: $tags).focused($focused, equals: .tags).submitLabel(.done).onSubmit { focused = nil } }.frame(maxWidth: .infinity); card(title: "重要", icon: "star.fill", color: .orange) { Toggle("", isOn: $record.important).labelsHidden() }.frame(width: 124).frame(minHeight: 128) }; moduleFields }.padding(.horizontal, 16).padding(.vertical, 18).background(Color.clear.contentShape(Rectangle()).onTapGesture { focused = nil }) }.scrollDismissesKeyboard(.interactively).background(LakeBackground(lightweight: true)).safeAreaInset(edge: .bottom) { if let onVoice { captureBar(onVoice) } }.toolbar { ToolbarItemGroup(placement: .topBarTrailing) { if let onSearch { Button { focused = nil; if let value = prepared() { onSearch(value) } } label: { Label("搜索", systemImage: "magnifyingglass") } }; Button { focused = nil; if let value = prepared() { onSave(value) } } label: { Text(LocalizedStringKey(saveTitle)) }.buttonStyle(.borderedProminent).accessibilityIdentifier(showRawInput && !showsDetailSummary ? "review.save" : "record.save") }; ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("完成") { focused = nil } } }.confirmationDialog("添加图片", isPresented: $attachmentMenu) { Button("拍照") { if UIImagePickerController.isSourceTypeAvailable(.camera) { camera = true } else { model.error = "当前设备没有可用相机。" } }; Button("从相册选择") { photos = true }; Button("取消", role: .cancel) {} }.photosPicker(isPresented: $photos, selection: $photo, matching: .images).sheet(isPresented: $camera) { CameraPicker() }.onChange(of: record.tags) { tags = $0.joined(separator: ", ") }.onChange(of: record.amount) { amount = $0.map(String.init(describing:)) ?? "" }.onChange(of: focused) { old, new in if old == .raw && new != .raw { autoSave() } }.onChange(of: record.module) { _ in autoSave() }.onChange(of: record.important) { _ in autoSave() }.onChange(of: record.reminderEnabled) { _ in autoSave() }.onChange(of: record.status) { _ in autoSave() }.onChange(of: record.occurredAt) { _ in autoSave() }.onChange(of: record.dueAt) { _ in autoSave() }.onDisappear { focused = nil } }
+    var body: some View { ScrollView { VStack(spacing: 16) { if showsDetailSummary { detailSummary }; card { Picker("模块", selection: $record.module) { ForEach(Module.allCases) { Label(LocalizedStringKey($0.title), systemImage: $0.icon).tag($0) } }.pickerStyle(.segmented) }; if showRawInput { card(title: "记录原文", icon: "square.and.pencil", color: .blue, trailing: onReparse == nil ? nil : { focused = nil; onReparse?() }) { TextField("记录原文", text: $record.rawInput, axis: .vertical).focused($focused, equals: .raw).font(.body).lineLimit(3...8).submitLabel(.done).onSubmit { focused = nil; autoSave() }.accessibilityIdentifier("review.rawInput") } }; card(title: "内容", icon: "sparkles", color: .purple) { Text(record.content).font(.body).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }; HStack(alignment: .top, spacing: 12) { card(title: "标签", icon: "tag.fill", color: .purple) { TextField("逗号分隔", text: $tags).focused($focused, equals: .tags).submitLabel(.done).onSubmit { focused = nil } }.frame(maxWidth: .infinity); card(title: "重要", icon: "star.fill", color: .orange) { Toggle("重要", isOn: $record.important).labelsHidden() }.frame(width: 124).frame(minHeight: 128) }; moduleFields }.padding(.horizontal, 16).padding(.vertical, 18).background(Color.clear.contentShape(Rectangle()).onTapGesture { focused = nil }) }.scrollDismissesKeyboard(.interactively).background(LakeBackground(lightweight: true)).safeAreaInset(edge: .bottom) { if let onVoice { captureBar(onVoice) } }.toolbar { ToolbarItemGroup(placement: .topBarTrailing) { if let onSearch { Button { focused = nil; if let value = prepared() { onSearch(value) } } label: { Label("搜索", systemImage: "magnifyingglass") } }; Button { focused = nil; if let value = prepared() { onSave(value) } } label: { Text(LocalizedStringKey(saveTitle)) }.buttonStyle(.borderedProminent).accessibilityIdentifier(showRawInput && !showsDetailSummary ? "review.save" : "record.save") }; ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("完成") { focused = nil } } }.confirmationDialog("添加图片", isPresented: $attachmentMenu) { Button("拍照") { if UIImagePickerController.isSourceTypeAvailable(.camera) { camera = true } else { model.error = "当前设备没有可用相机。" } }; Button("从相册选择") { photos = true }; Button("取消", role: .cancel) {} }.photosPicker(isPresented: $photos, selection: $photo, matching: .images).sheet(isPresented: $camera) { CameraPicker() }.onChange(of: photo) { if photo != nil { model.error = "当前版本尚不支持保存图片附件。"; photo = nil } }.onChange(of: record.tags) { tags = $0.joined(separator: ", ") }.onChange(of: record.amount) { amount = $0.map(String.init(describing:)) ?? "" }.onChange(of: focused) { old, new in if old == .raw && new != .raw { autoSave() } }.onChange(of: record.module) { _ in autoSave() }.onChange(of: record.important) { _ in autoSave() }.onChange(of: record.reminderEnabled) { _ in autoSave() }.onChange(of: record.status) { _ in autoSave() }.onChange(of: record.occurredAt) { _ in autoSave() }.onChange(of: record.dueAt) { _ in autoSave() }.onDisappear { focused = nil } }
     private func captureBar(_ onVoice: @escaping () -> Void) -> some View { HStack(spacing: 10) { Button { focused = nil; onVoice() } label: { VStack(spacing: 3) { Image(systemName: isRecording ? "waveform" : "mic.fill").font(.title2); Text(LocalizedStringKey(voiceLabel)).font(.caption2) }.frame(width: 72, height: 58).foregroundStyle(isRecording ? .white : .blue).background(isRecording ? .blue : .white.opacity(0.85), in: Circle()).shadow(color: .blue.opacity(0.18), radius: 9) }; HStack { TextField("继续说，补充或修改…", text: $record.rawInput).focused($focused, equals: .raw).submitLabel(.search).onSubmit { focused = nil; if let value = prepared() { onSearch?(value) } }; Button { focused = nil; if let value = prepared() { onSearch?(value) } } label: { Image(systemName: "magnifyingglass").font(.title2) } }.padding(.horizontal, 16).frame(height: 58).background(.white.opacity(0.8), in: Capsule()); Button { focused = nil; attachmentMenu = true } label: { Image(systemName: "plus").font(.title2).frame(width: 54, height: 54).background(.white.opacity(0.85), in: Circle()) } }.padding(12).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30)).padding(.horizontal, 8) }
     private var detailSummary: some View { HStack(spacing: 16) { Image(systemName: record.module.icon).font(.system(size: 34, weight: .semibold)).foregroundStyle(record.module.color).frame(width: 72, height: 72).background(record.module.color.opacity(0.14), in: RoundedRectangle(cornerRadius: 22)); VStack(alignment: .leading, spacing: 5) { Text(LocalizedStringKey(record.module.title)).font(.headline).foregroundStyle(record.module.color); Text(record.content).font(.title3.bold()).lineLimit(2); Text(record.occurredAt ?? record.createdAt, style: .date).font(.caption).foregroundStyle(.secondary) }; Spacer(); Image(systemName: record.important ? "star.fill" : "star").foregroundStyle(.orange) }.padding(20).frame(maxWidth: .infinity, alignment: .leading).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30)).overlay(RoundedRectangle(cornerRadius: 30).stroke(.white.opacity(0.95))).shadow(color: record.module.color.opacity(0.16), radius: 18, y: 8) }
     @ViewBuilder private var moduleFields: some View { switch record.module { case .ledger: VStack(spacing: 12) { fieldCard("商家", "storefront.fill", .blue) { optional("商家", $record.merchant, .merchant) }; if record.amountItems.count > 1 { card(title: "金额明细", icon: "banknote.fill", color: .orange) { LazyVGrid(columns: [.init(.flexible()), .init(.flexible())], spacing: 10) { ForEach(record.amountItems, id: \.self) { item in VStack(alignment: .leading) { Text(CurrencyCanonicalizer.displayName(item.currency, languageCode: appLanguageCode) ?? "未标币种").font(.caption).foregroundStyle(.secondary); Text(String(describing: item.value)).font(.title3.bold()) }.frame(maxWidth: .infinity, alignment: .leading).padding(12).background(.white.opacity(0.58), in: RoundedRectangle(cornerRadius: 15)) } } } } else { HStack(alignment: .top, spacing: 12) { fieldCard("金额", "banknote.fill", .orange) { TextField("金额", text: $amount).keyboardType(.decimalPad).focused($focused, equals: .amount) }; fieldCard("货币", "coloncurrencysign.circle.fill", .green) { TextField("币种", text: currencyText).focused($focused, equals: .currency).submitLabel(.done).onSubmit { focused = nil } } } }; HStack(alignment: .top, spacing: 12) { fieldCard("类别", "tag.fill", .purple) { optional("类别", $record.category, .category) }; fieldCard("支付方式", "creditcard.fill", .orange) { optional("支付方式", $record.paymentMethod, .payment) } }; HStack(alignment: .top, spacing: 12) { fieldCard("地点", "mappin.circle.fill", .mint) { optional("地点", $record.location, .location) }.frame(maxWidth: .infinity); fieldCard("日期时间", "calendar", .indigo) { date("日期时间", $record.occurredAt) }.frame(maxWidth: .infinity) } }; case .todo: VStack(spacing: 12) { card(title: "待办时间", icon: "calendar", color: .indigo) { date("日期时间", $record.dueAt) }; HStack { card(title: "提醒", icon: "bell.fill", color: .orange) { Toggle("提醒", isOn: reminderBinding); Text(LocalizedStringKey(reminderStatus)).font(.caption).foregroundStyle(.secondary) }; card(title: "状态", icon: "checkmark.circle.fill", color: .green) { Picker("状态", selection: Binding(get: { record.status ?? .pending }, set: { record.status = $0 })) { ForEach(TodoStatus.allCases, id: \.self) { Text($0.rawValue).tag($0) } } } }; card(title: "地点", icon: "mappin.circle.fill", color: .mint) { optional("地点", $record.location, .location) } }; case .memo: card(title: "提醒", icon: "bell.fill", color: .orange) { Toggle("提醒", isOn: reminderBinding); Text(LocalizedStringKey(reminderStatus)).font(.caption).foregroundStyle(.secondary) }; case .idea: EmptyView() } }
@@ -508,7 +565,7 @@ struct RecordForm: View {
     private func fieldCard<Content: View>(_ title: String, _ icon: String, _ color: Color, @ViewBuilder content: () -> Content) -> some View { card(title: title, icon: icon, color: color) { content() }.frame(minHeight: 112, alignment: .top) }
     private func optional(_ title: String, _ value: Binding<String?>, _ field: AppFocus) -> some View { TextField(LocalizedStringKey(title), text: Binding(get: { value.wrappedValue ?? "" }, set: { value.wrappedValue = $0.isEmpty ? nil : $0 })).focused($focused, equals: field).submitLabel(.done).onSubmit { focused = nil } }
     private var currencyText: Binding<String> { Binding(get: { CurrencyCanonicalizer.displayName(record.currency, languageCode: appLanguageCode) ?? "" }, set: { record.currency = CurrencyCanonicalizer.canonical($0) }) }
-    private func date(_ title: String, _ value: Binding<Date?>) -> some View { VStack(alignment: .leading) { Toggle("Set", isOn: Binding(get: { value.wrappedValue != nil }, set: { value.wrappedValue = $0 ? Date() : nil })); if value.wrappedValue != nil { DatePicker(LocalizedStringKey(title), selection: Binding(get: { value.wrappedValue! }, set: { value.wrappedValue = $0 }), displayedComponents: [.date, .hourAndMinute]).labelsHidden() } } }
+    private func date(_ title: String, _ value: Binding<Date?>) -> some View { VStack(alignment: .leading) { Toggle("Set", isOn: Binding(get: { value.wrappedValue != nil }, set: { value.wrappedValue = $0 ? Date() : nil })); if value.wrappedValue != nil { DatePicker(LocalizedStringKey(title), selection: Binding(get: { value.wrappedValue ?? Date() }, set: { value.wrappedValue = $0 }), displayedComponents: [.date, .hourAndMinute]).labelsHidden() } } }
     private func autoSave() { guard onAutoSave != nil, let value = prepared() else { return }; onAutoSave?(value) }
     private func prepared() -> Record? { focused = nil; var value = record; value.tags = tags.csv; value.currency = CurrencyCanonicalizer.canonical(value.currency); guard amount.isEmpty || Decimal(string: amount) != nil else { model.error = "金额格式无效"; return nil }; if value.module == .ledger, value.amountItems.count <= 1 { value.amount = amount.isEmpty ? nil : Decimal(string: amount); value.amountItems = value.amount.map { [AmountItem(value: $0, currency: value.currency)] } ?? [] }; record = value; return value }
 }
@@ -516,11 +573,12 @@ struct RecordForm: View {
 struct RecordRow: View { let record: Record; var body: some View { VStack(alignment: .leading) { Text(record.content).lineLimit(2); Text(record.occurredAt ?? record.createdAt, style: .date).font(.caption).foregroundStyle(.secondary) } } }
 
 struct CameraPicker: UIViewControllerRepresentable {
+    @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
-    func makeCoordinator() -> Coordinator { Coordinator(dismiss: dismiss) }
+    func makeCoordinator() -> Coordinator { Coordinator(dismiss: dismiss, onSelection: { model.error = "当前版本尚不支持保存图片附件。" }) }
     func makeUIViewController(context: Context) -> UIImagePickerController { let picker = UIImagePickerController(); picker.sourceType = .camera; picker.delegate = context.coordinator; return picker }
     func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
-    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate { let dismiss: DismissAction; init(dismiss: DismissAction) { self.dismiss = dismiss }; func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) { dismiss() }; func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { dismiss() } }
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate { let dismiss: DismissAction; let onSelection: () -> Void; init(dismiss: DismissAction, onSelection: @escaping () -> Void) { self.dismiss = dismiss; self.onSelection = onSelection }; func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) { onSelection(); dismiss() }; func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { dismiss() } }
 }
 
 @MainActor final class SpeechInput: ObservableObject {
