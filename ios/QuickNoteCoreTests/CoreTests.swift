@@ -161,6 +161,14 @@ final class IdentityRaceTests: XCTestCase {
         XCTAssertEqual(store.saveCount, 0)
     }
 
+    @MainActor func testStaleDetailCannotBeSavedUnderAnotherIdentity() throws {
+        let store = SpyStore(), model = AppModel(identityProvider: DeferredIdentityProvider(), store: store)
+        model.identity.accept(user)
+        let stale = Record(ownerID: "other", ownerIssuer: user.issuer, module: .memo, rawInput: "foreign detail")
+        XCTAssertThrowsError(try model.save(stale)) { XCTAssertEqual($0 as? CoreError, .recordNotOwned) }
+        XCTAssertEqual(store.saveCount, 0)
+    }
+
     @MainActor func testRedirectMustMatchExactlyAndEmptyHTTPSHostIsRejected() throws {
         var info: [String: Any] = ["FireseedIdentityEnvironment": "STAGING", "FireseedIdentityIssuer": "https://identity.example/oidc", "FireseedIdentityEndpoint": "https://identity.example", "FireseedIdentityClientID": "public", "FireseedIdentityRedirectURI": "com.fireseed.aiquicknote://oauth/callback", "FireseedIdentityPostLogoutRedirectURI": "com.fireseed.aiquicknote://oauth/signed-out"]
         XCTAssertTrue(try XCTUnwrap(IdentityProviderConfiguration(info: info)).isUsable)

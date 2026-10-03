@@ -203,6 +203,7 @@ enum ReminderServiceError: Error { case permissionDenied }
 
     func reload() { guard identity.state != .resolving else { records = []; return }; do { records = try core.records() } catch { records = []; self.error = error.localizedDescription } }
     func save(_ value: Record) throws {
+        guard value.ownerID.isEmpty || (value.ownerID == identity.confirmedUserID && value.ownerIssuer == identity.confirmedIssuer) else { throw CoreError.recordNotOwned }
         var value = value
         if value.reminderEnabled, value.reminderState != .missingExternalReminder,
            let existing = try core.records().first(where: { $0.id == value.id }), existing.reminderLinked {
@@ -400,8 +401,9 @@ private struct ShareFile: Identifiable { let id = UUID(); let url: URL }
 struct ShareOptionsView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss; @State private var options = SharePrivacyOptions(); @State private var file: ShareFile?; let records: [Record]; var pageLabel: String? = nil
-    var body: some View { NavigationStack { Form { Toggle("显示金额", isOn: $options.showAmount); Toggle("显示日期时间", isOn: $options.showDateTime); Toggle("显示标签", isOn: $options.showTags); Toggle("显示商家或地点", isOn: $options.showMerchantOrLocation); Button("生成 PNG 并分享") { share() }.buttonStyle(.borderedProminent).disabled(records.isEmpty) }.navigationTitle(LocalizedStringKey(records.count == 1 ? "分享记录" : "分享搜索摘要")).toolbar { Button("取消") { dismiss() } }.sheet(item: $file) { ShareSheet(items: [$0.url]) } } }
-    private func share() { guard let png = ShareCardRenderer.png(records: records, options: options, pageLabel: pageLabel) else { model.error = "分享图片生成失败，请重试。"; return }; let url = FileManager.default.temporaryDirectory.appendingPathComponent("AIQuickNote-Share-\(UUID().uuidString).png"); do { try png.write(to: url, options: .atomic); file = ShareFile(url: url) } catch { model.error = "分享文件生成失败，请重试。" } }
+    private var visibleRecords: [Record] { records.filter { $0.ownerID == model.identity.confirmedUserID && $0.ownerIssuer == model.identity.confirmedIssuer } }
+    var body: some View { NavigationStack { Form { Toggle("显示金额", isOn: $options.showAmount); Toggle("显示日期时间", isOn: $options.showDateTime); Toggle("显示标签", isOn: $options.showTags); Toggle("显示商家或地点", isOn: $options.showMerchantOrLocation); Button("生成 PNG 并分享") { share() }.buttonStyle(.borderedProminent).disabled(visibleRecords.isEmpty) }.navigationTitle(LocalizedStringKey(records.count == 1 ? "分享记录" : "分享搜索摘要")).toolbar { Button("取消") { dismiss() } }.sheet(item: $file) { ShareSheet(items: [$0.url]) } } }
+    private func share() { guard let png = ShareCardRenderer.png(records: visibleRecords, options: options, pageLabel: pageLabel) else { model.error = "分享图片生成失败，请重试。"; return }; let url = FileManager.default.temporaryDirectory.appendingPathComponent("AIQuickNote-Share-\(UUID().uuidString).png"); do { try png.write(to: url, options: .atomic); file = ShareFile(url: url) } catch { model.error = "分享文件生成失败，请重试。" } }
 }
 
 struct ShareSheet: UIViewControllerRepresentable { let items: [Any]; func makeUIViewController(context: Context) -> UIActivityViewController { UIActivityViewController(activityItems: items, applicationActivities: nil) }; func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {} }
