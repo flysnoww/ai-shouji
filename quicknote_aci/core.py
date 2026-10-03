@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import uuid
@@ -45,6 +46,7 @@ class PermissionAdmin:
         self._core = core
 
     def grant(self, actor: Actor, *, actions: set[str], modules: set[str], duration: str) -> str:
+        self._core._validate_actor(actor)
         if not actions or not actions <= {"read", "write"}:
             raise ValueError("actions must contain only read/write")
         if not modules or not modules <= MODULES:
@@ -66,12 +68,21 @@ class _Transaction:
 
     def __enter__(self):
         self.core._lock.acquire()
-        self.core._db.execute("BEGIN IMMEDIATE")
+        try:
+            self.core._db.execute("BEGIN IMMEDIATE")
+        except BaseException:
+            self.core._lock.release()
+            raise
         return self.core._db
 
     def __exit__(self, exc_type, exc, tb):
-        self.core._db.execute("ROLLBACK" if exc_type else "COMMIT")
-        self.core._lock.release()
+        try:
+            self.core._db.execute("ROLLBACK" if exc_type else "COMMIT")
+        except BaseException:
+            self.core._db.rollback()
+            raise
+        finally:
+            self.core._lock.release()
 
 
 class CoreCapabilityLayer:
@@ -113,22 +124,31 @@ class CoreCapabilityLayer:
           occurred_at TEXT NOT NULL
         );
         """)
+        # Legacy rows have no proven owner. Retain them without assigning ownership.
+        columns = {row["name"] for row in self._db.execute("PRAGMA table_info(records)")}
+        if "owner_subject" not in columns:
+            self._db.execute("ALTER TABLE records ADD COLUMN owner_subject TEXT")
         self._db.commit()
 
     def invoke(self, capability: str, arguments: dict[str, Any], actor: Actor, *, request_id: str | None = None) -> dict:
         request_id = request_id or _id("req")
         audit_id = _id("aud")
-        action, module = self._classify(capability, arguments)
+        action, module = "read", None
         try:
             self._validate_actor(actor)
+            if not isinstance(arguments, dict) or not isinstance(capability, str):
+                raise ValidationError("Capability and arguments must be a string and object")
+            if not all(isinstance(key, str) for key in arguments):
+                raise ValidationError("Input property names must be strings")
             with self._transaction() as db:
+                action, module = self._classify(capability, arguments, actor)
                 grant_id = self._authorize(db, actor, action, module)
                 if capability in CREATE_CAPABILITIES:
                     result, audit_result = self._create(db, capability, module, arguments, actor)
                 elif capability == GET_CAPABILITY:
-                    result, audit_result = self._get(db, arguments, module)
+                    result, audit_result = self._get(db, arguments, module, actor)
                 elif capability == SEARCH_CAPABILITY:
-                    result, audit_result = self._search(db, arguments)
+                    result, audit_result = self._search(db, arguments, actor)
                 else:
                     raise ValidationError("Unknown capability", details={"capability": capability})
                 self._consume_once(db, grant_id)
@@ -140,22 +160,26 @@ class CoreCapabilityLayer:
                 self._audit(db, audit_id, request_id, actor, capability, action, module, "denied" if isinstance(exc, UnauthorizedError) else "error", exc.code, [])
             return {"ok": False, "request_id": request_id, "error": {"code": exc.code, "message": exc.message, "details": exc.details, "retryable": exc.retryable}, "audit_id": audit_id}
 
-    def _classify(self, capability: str, arguments: dict) -> tuple[str, str | None]:
+    def _classify(self, capability: str, arguments: dict, actor: Actor) -> tuple[str, str | None]:
         if capability in CREATE_CAPABILITIES:
             return "write", CREATE_CAPABILITIES[capability]
         if capability == GET_CAPABILITY:
             record_id = arguments.get("record_id")
-            row = self._db.execute("SELECT module FROM records WHERE id = ?", (record_id,)).fetchone() if isinstance(record_id, str) else None
+            row = self._db.execute("SELECT module FROM records WHERE id = ? AND owner_subject = ?", (record_id, actor.subject)).fetchone() if isinstance(record_id, str) else None
             return "read", row["module"] if row else None
         if capability == SEARCH_CAPABILITY:
             modules = arguments.get("modules")
+            if "modules" in arguments and (not isinstance(modules, list) or not modules or not all(isinstance(value, str) and value in MODULES for value in modules)):
+                raise ValidationError("modules must contain valid module names")
             return "read", modules[0] if isinstance(modules, list) and len(modules) == 1 else None
         return "read", None
 
     @staticmethod
     def _validate_actor(actor: Actor) -> None:
-        if not actor.subject.strip() or not actor.client_id.strip() or not actor.client_name.strip():
+        if any(not isinstance(value, str) or not value.strip() for value in (actor.subject, actor.client_id, actor.client_name)):
             raise ValidationError("Actor subject, client_id, and client_name are required")
+        if "|" in actor.subject or "|" in actor.client_id:
+            raise ValidationError("Actor subject and client_id must not contain the grant-key separator")
 
     def _authorize(self, db, actor: Actor, action: str, module: str | None) -> str:
         rows = db.execute("SELECT * FROM grants WHERE actor_key = ? AND consumed_at IS NULL", (actor.key,)).fetchall()
@@ -176,12 +200,12 @@ class CoreCapabilityLayer:
         if idem:
             existing = db.execute("SELECT record_id FROM idempotency WHERE actor_key=? AND capability=? AND idem_key=?", (actor.key, capability, idem)).fetchone()
             if existing:
-                return {"record": self._load_record(db, existing["record_id"]), "idempotent_replay": True}, "idempotent_replay"
+                return {"record": self._load_record(db, existing["record_id"], actor.subject), "idempotent_replay": True}, "idempotent_replay"
         timestamp, record_id = _now(), _id("rec")
         module_data = {k: args[k] for k in ("amount", "currency", "due_at", "completed") if k in args}
         record = {"id": record_id, "module": module, "content": args["content"], "important": args.get("important", False), "reminder": args.get("reminder"), "module_data": module_data, "created_at": timestamp, "updated_at": timestamp, "revision": 1}
         raw_input = args.get("raw_input", args["content"])
-        db.execute("INSERT INTO records VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (record_id, module, record["content"], int(record["important"]), json.dumps(record["reminder"]), json.dumps(module_data), json.dumps(raw_input, ensure_ascii=False), json.dumps(record, ensure_ascii=False), timestamp, timestamp, 1))
+        db.execute("INSERT INTO records (id,module,content,important,reminder_json,module_data_json,raw_input_json,confirmed_record_json,created_at,updated_at,revision,owner_subject) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (record_id, module, record["content"], int(record["important"]), json.dumps(record["reminder"]), json.dumps(module_data), json.dumps(raw_input, ensure_ascii=False), json.dumps(record, ensure_ascii=False), timestamp, timestamp, 1, actor.subject))
         if idem:
             db.execute("INSERT INTO idempotency VALUES (?, ?, ?, ?)", (actor.key, capability, idem, record_id))
         return {"record": record, "idempotent_replay": False}, "success"
@@ -200,29 +224,44 @@ class CoreCapabilityLayer:
             raise ValidationError("important must be boolean")
         if "reminder" in args and args["reminder"] is not None and not isinstance(args["reminder"], dict):
             raise ValidationError("reminder must be an object or null")
-        if "idempotency_key" in args and (not isinstance(args["idempotency_key"], str) or not args["idempotency_key"]):
-            raise ValidationError("idempotency_key must be a non-empty string")
+        if "idempotency_key" in args and (not isinstance(args["idempotency_key"], str) or not 1 <= len(args["idempotency_key"]) <= 200):
+            raise ValidationError("idempotency_key must contain 1 to 200 characters")
+        for field, pattern in (("amount", r"-?[0-9]+(\.[0-9]+)?"), ("currency", r"[A-Z]{3}")):
+            if field in args and (not isinstance(args[field], str) or re.fullmatch(pattern, args[field]) is None):
+                raise ValidationError(f"{field} has invalid format")
+        if "completed" in args and not isinstance(args["completed"], bool):
+            raise ValidationError("completed must be boolean")
+        if args.get("due_at") is not None:
+            try:
+                if not isinstance(args["due_at"], str) or datetime.fromisoformat(args["due_at"].replace("Z", "+00:00")).tzinfo is None:
+                    raise ValueError()
+            except (ValueError, TypeError):
+                raise ValidationError("due_at must be an ISO date-time with timezone")
+        try:
+            json.dumps(args, allow_nan=False)
+        except (TypeError, ValueError):
+            raise ValidationError("Input must contain finite JSON values")
 
-    def _get(self, db, args: dict, module: str | None) -> tuple[dict, str]:
+    def _get(self, db, args: dict, module: str | None, actor: Actor) -> tuple[dict, str]:
         if set(args) != {"record_id"} or not isinstance(args.get("record_id"), str):
             raise ValidationError("record.get requires only record_id")
         if module is None:
             raise NotFoundError("Record not found")
-        return {"record": self._load_record(db, args["record_id"])}, "success"
+        return {"record": self._load_record(db, args["record_id"], actor.subject)}, "success"
 
-    def _search(self, db, args: dict) -> tuple[dict, str]:
+    def _search(self, db, args: dict, actor: Actor) -> tuple[dict, str]:
         allowed = {"query", "modules", "important", "limit"}
         if set(args) - allowed:
             raise ValidationError("Unknown search properties", details={"properties": sorted(set(args) - allowed)})
         query = args.get("query", "")
         modules = args.get("modules", sorted(MODULES))
         limit = args.get("limit", 50)
-        if not isinstance(query, str) or not isinstance(modules, list) or not modules or not set(modules) <= MODULES:
+        if not isinstance(query, str) or not isinstance(modules, list) or not modules or not all(isinstance(module, str) and module in MODULES for module in modules):
             raise ValidationError("query/modules are invalid")
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
             raise ValidationError("limit must be an integer from 1 to 100")
-        sql = f"SELECT id FROM records WHERE module IN ({','.join('?' for _ in modules)}) AND content LIKE ?"
-        params: list[Any] = list(modules) + [f"%{query}%"]
+        sql = f"SELECT id FROM records WHERE owner_subject = ? AND module IN ({','.join('?' for _ in modules)}) AND content LIKE ?"
+        params: list[Any] = [actor.subject] + list(modules) + [f"%{query}%"]
         if "important" in args:
             if not isinstance(args["important"], bool):
                 raise ValidationError("important must be boolean")
@@ -230,12 +269,12 @@ class CoreCapabilityLayer:
             params.append(int(args["important"]))
         sql += " ORDER BY created_at DESC, id ASC LIMIT ?"
         params.append(limit)
-        records = [self._load_record(db, row["id"]) for row in db.execute(sql, params).fetchall()]
+        records = [self._load_record(db, row["id"], actor.subject) for row in db.execute(sql, params).fetchall()]
         return {"records": records, "count": len(records)}, "success"
 
     @staticmethod
-    def _load_record(db, record_id: str) -> dict:
-        row = db.execute("SELECT confirmed_record_json FROM records WHERE id = ?", (record_id,)).fetchone()
+    def _load_record(db, record_id: str, owner_subject: str) -> dict:
+        row = db.execute("SELECT confirmed_record_json FROM records WHERE id = ? AND owner_subject = ?", (record_id, owner_subject)).fetchone()
         if not row:
             raise NotFoundError("Record not found")
         return json.loads(row["confirmed_record_json"])
@@ -262,4 +301,3 @@ class CoreCapabilityLayer:
     def get_trace(self, record_id: str) -> dict | None:
         row = self._db.execute("SELECT raw_input_json, confirmed_record_json FROM records WHERE id = ?", (record_id,)).fetchone()
         return {"raw_input": json.loads(row["raw_input_json"]), "confirmed_record": json.loads(row["confirmed_record_json"])} if row else None
-
