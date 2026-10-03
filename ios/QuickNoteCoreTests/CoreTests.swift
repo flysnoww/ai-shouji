@@ -14,6 +14,15 @@ private final class SpyStore: RecordStore, @unchecked Sendable {
 }
 
 final class StabilityTests: XCTestCase {
+    func testAmountInputRejectsPartialNumbersAndUsesDecimalLocale() {
+        let english = Locale(identifier: "en_US"), french = Locale(identifier: "fr_FR")
+        XCTAssertEqual(AmountInput.parse("12.50", locale: english), Decimal(string: "12.5"))
+        XCTAssertEqual(AmountInput.parse("12,50", locale: french), Decimal(string: "12.5"))
+        XCTAssertEqual(AmountInput.parse(".5", locale: english), Decimal(string: "0.5"))
+        for value in ["12oops", "1,234", "1.2.3", "NaN", "", String(repeating: "9", count: 39)] {
+            XCTAssertNil(AmountInput.parse(value, locale: english), value)
+        }
+    }
     func testAmountRangeMustMatchOneItem() {
         let outside = Record(module: .ledger, rawInput: "outside", amountItems: [.init(value: 1, currency: "USD"), .init(value: 100, currency: "USD")])
         let inside = Record(module: .ledger, rawInput: "inside", amountItems: [.init(value: 15, currency: "USD")])

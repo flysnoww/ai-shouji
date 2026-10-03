@@ -39,6 +39,17 @@ public struct AmountItem: Codable, Hashable, Sendable {
 
 public enum ReminderState: String, Codable, Sendable { case none, requested, active, permissionDenied, missingExternalReminder }
 
+public enum AmountInput {
+    public static func parse(_ input: String, locale: Locale = .current) -> Decimal? {
+        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let separator = locale.decimalSeparator ?? "."
+        let normalized = separator == "." ? text : text.replacingOccurrences(of: separator, with: ".")
+        guard normalized.range(of: #"^[+-]?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)$"#, options: .regularExpression) != nil,
+              normalized.filter(\.isNumber).count <= 38 else { return nil }
+        return Decimal(string: normalized, locale: Locale(identifier: "en_US_POSIX"))
+    }
+}
+
 public struct Record: Identifiable, Codable, Hashable, Sendable {
     public var id: UUID
     public var ownerID: String
