@@ -7,6 +7,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     runs-on: macos-latest
@@ -22,6 +25,20 @@ jobs:
       - name: Swift Core tests
         working-directory: ios
         run: swift test
+
+      - name: Python contracts and release invariants
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Release simulator build and metadata validation
+        run: |
+          set -euo pipefail
+          xcodebuild -project ios/AIQuickNote.xcodeproj -scheme AIQuickNote -sdk iphonesimulator -configuration Release -derivedDataPath ReleaseValidation CODE_SIGNING_ALLOWED=NO build | tee xcodebuild-release.log
+          PLIST="ReleaseValidation/Build/Products/Release-iphonesimulator/AIQuickNote.app/Info.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST")" = 'org.tmiai.aiquicknote'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :FireseedIdentityEnvironment' "$PLIST")" = 'PRODUCTION'
+          for key in FireseedIdentityEndpoint FireseedIdentityIssuer FireseedIdentityClientID; do
+            test -z "$(/usr/libexec/PlistBuddy -c "Print :$key" "$PLIST")"
+          done
 
       - name: Xcode Simulator build
         run: |
@@ -49,6 +66,7 @@ jobs:
             -configuration Debug \
             -destination "platform=iOS Simulator,id=$DEVICE_ID,arch=arm64" \
             -resultBundlePath TestResults.xcresult \
+            -parallel-testing-enabled NO \
             ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO | tee xcodebuild-test.log
 
