@@ -10,6 +10,16 @@ final class NavigationRegressionTests: XCTestCase {
         app.launch()
     }
 
+    override func tearDownWithError() throws {
+        if let testRun, testRun.failureCount > 0 {
+            screenshot("failure-state")
+            let hierarchy = XCTAttachment(string: app.debugDescription)
+            hierarchy.name = "failure-hierarchy"
+            hierarchy.lifetime = .keepAlways
+            add(hierarchy)
+        }
+    }
+
     private var record: XCUIElement {
         app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "record.")).firstMatch
     }
@@ -26,7 +36,8 @@ final class NavigationRegressionTests: XCTestCase {
             let card = app.buttons["home.module.\(module)"]
             XCTAssertTrue(card.waitForExistence(timeout: 10))
             if !card.isHittable { app.swipeUp() }
-            card.tap()
+            // XCTest's default hit point can fall outside the rounded card on iPhone Duo.
+            card.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
             XCTAssertTrue(record.waitForExistence(timeout: 5), module)
             record.tap()
             let close = app.buttons["detail.close"]
@@ -38,7 +49,11 @@ final class NavigationRegressionTests: XCTestCase {
             close.tap()
             XCTAssertTrue(close.waitForNonExistence(timeout: 5))
             XCTAssertTrue(record.isHittable)
-            app.navigationBars.buttons.element(boundBy: 0).tap()
+            // iPhone Duo exposes the system back button in a separate toolbar.
+            let back = app.buttons["BackButton"]
+            if back.exists { back.tap() }
+            else { app.navigationBars.buttons.element(boundBy: 0).tap() }
+            XCTAssertTrue(card.waitForExistence(timeout: 5))
         }
     }
 
@@ -116,7 +131,9 @@ final class NavigationRegressionTests: XCTestCase {
         app.launchArguments = ["--ui-identity-flow-tests", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
         let card = app.buttons["home.module.ledger"]
-        XCTAssertTrue(card.waitForExistence(timeout: 10)); card.tap()
+        XCTAssertTrue(card.waitForExistence(timeout: 10))
+        // Keep the tap inside the visible card instead of XCTest's inferred hit point.
+        card.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         app.buttons["module.add"].tap()
         let input = app.descendants(matching: .any)["module.compose.input"]
         XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap(); input.typeText("Module draft")
