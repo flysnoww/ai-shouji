@@ -1,5 +1,9 @@
 # AI QuickNote Project Rules
 
+## Shared Fireseed workflow
+
+Resolve the Fireseed workspace root by ascending from this repository until both `.workflow/` and `SDK/` exist; resolve shared paths from that root, never from a machine-specific absolute path. Follow `.workflow/AGENTS.md` and read `.workflow/README.md`, `.workflow/CURRENT_STATUS.md`, `.workflow/REGISTRY.md`, and `.workflow/docs/fireseed-apple-development-standard.md`; for TestFlight work also read `.workflow/docs/fireseed-testflight-release-standard.md`. Before using a shared SDK, consult `SDK/REGISTRY.md`, `SDK/Stable/README.md`, `SDK/Development/README.md`, and `SDK/docs/README.md`, then read its version-specific guide. The shared registry identifies FireseedIdentity `0.1.1` as Stable and AudioCapture as Preview; do not copy shared policy or SDK source into this project. Keep this project's rules, status, and release parameters authoritative for project-specific facts.
+
 * Keep the product ultra-lightweight and simple.
 * Core functionality must remain fully usable without AI or voice.
 * AI and voice are optional enhancement layers only.
