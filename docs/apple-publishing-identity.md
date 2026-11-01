@@ -7,12 +7,11 @@
 | 字段 | 已核实值 |
 |---|---|
 | App 名称 | AIQuickNote |
-| ASC App ID | **待核实**；现有可复核记录未找到数字 ID，不得从 Bundle ID 推导。 |
+| ASC App ID | `6816749718`；2026-10-31 通过 ASC 官方只读 API 按精确 Bundle ID 匹配验证。 |
 | Production Bundle ID | `org.tmiai.aiquicknote` |
 | Apple Team ID | 见中央索引 |
-| 最近有回执的上传 | `0.1 (12)`，2026-10-20；Delivery UUID `e4320ec2-db71-4690-9ee8-fae5d865f65d` |
-| 已留存处理状态 | `RECEIVED` / `PROCESSING`；这是历史响应，不代表当前 ASC 状态。 |
-| 内部测试组 | 名称曾记录为 `测试`；Build 12 分组未确认，组 UUID 待核实。 |
+| 最近上传 | `0.1 (12)`，2026-10-20；Build Upload UUID `e4320ec2-db71-4690-9ee8-fae5d865f65d`；实时查询为 Upload `COMPLETE`、Build `VALID`。 |
+| 内部测试组 | `测试`；UUID `1ef078a2-0ffc-4d2f-8c52-f6e898680ad3`；Build 12 关联且 `IN_BETA_TESTING`（2026-10-31 实时查询）。 |
 
 ## 签名配置
 
@@ -25,8 +24,12 @@ Build 12 的历史发布报告只确认复用了当时匹配的 Profile；不能
 ## 认证、查询与上传
 
 - Build 12 通过既有 Xcode 账号上传路径收到 Apple 回执；该证据不证明本地 ASC REST 查询能力可用。
-- 本轮未确认 AIQuickNote 专属 ASC REST 查询脚本可用，也未确认当前 App Store Connect App ID。下次发布先查看本项目最新配置与历史凭据，再选择可用查询通道。
+- AIQuickNote 没有项目专属 ASC 全分页查询脚本；中央只读 API 本轮已确认 App ID 与 Build 状态。后续发布使用中央索引记录的认证配置和已修复的共享查询工具，避免把 Xcode 上传能力与 REST 查询能力混为一谈。
 - 禁止把 API 私钥、密码、Token、Cookie 或证书私钥写入本页或 Git。
+
+## ASC 实时只读复核
+
+2026-10-31 按 Bundle ID `org.tmiai.aiquicknote` 查询 Apple 官方 ASC API，精确匹配 App ID `6816749718`。Build 12 当前为 `VALID`，已关联内部组 `测试` 并可供内部测试。该结果更新此前仅有上传回执的历史状态；本轮没有创建或修改 ASC 资源。全局 Issuer、Key ID 和 Key 可用性见中央索引。
 
 ## 版本与复核入口
 
